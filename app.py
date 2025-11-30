@@ -3,6 +3,7 @@
 import os
 import tempfile
 from datetime import datetime
+from functools import wraps
 
 from flask import (
     Flask,
@@ -12,6 +13,7 @@ from flask import (
     redirect,
     url_for,
     flash,
+    session,
 )
 
 from core.file_loader import load_scan_file, load_rami_file
@@ -21,17 +23,39 @@ from core.gap_checker import find_missing_transactions
 
 
 app = Flask(__name__)
-app.secret_key = "realestate-app-secret-key"  # needed for flash messages
+# Secret key for sessions and flash messages
+app.secret_key = "realestate-app-secret-key"
+
 CURRENT_YEAR = datetime.now().year
 
+# -------------------------------------------------------------------
+# Access control: whitelist emails + shared access code
+# -------------------------------------------------------------------
+
+# ✅ EDIT THIS LIST – add the emails you want to approve
+ALLOWED_EMAILS = [
+    "ariel.portnik@g,ail.com", "arielpo@yad2.co.il", "afiki@yad2.co.il"
+]
+
+# Access code. On Render you can override this with an env var ACCESS_CODE.
+ACCESS_CODE = os.getenv("ACCESS_CODE", "123456")
+
+
+def login_required(view_func):
+    """Decorator that forces login for protected routes."""
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        if not session.get("user_email"):
+            return redirect(url_for("login"))
+        return view_func(*args, **kwargs)
+    return wrapped
+
 
 # -------------------------------------------------
-# Shared base styles (minimalist, professional UI)
+# Shared base styles (minimalist UI)
 # -------------------------------------------------
 BASE_STYLE = """
-    * {
-        box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
     body {
         margin: 0;
         padding: 0;
@@ -39,9 +63,7 @@ BASE_STYLE = """
         background: #f3f4f6;
         color: #111827;
     }
-    a {
-        color: inherit;
-    }
+    a { color: inherit; }
     .layout {
         min-height: 100vh;
         display: flex;
@@ -60,11 +82,15 @@ BASE_STYLE = """
         font-weight: 600;
         letter-spacing: 0.02em;
     }
-    .topbar-nav a {
-        margin-left: 18px;
+    .topbar-nav {
+        display: flex;
+        align-items: center;
+        gap: 14px;
         font-size: 0.95rem;
-        color: #e5e7eb;
+    }
+    .topbar-nav a {
         text-decoration: none;
+        color: #e5e7eb;
         opacity: 0.9;
     }
     .topbar-nav a:hover {
@@ -74,6 +100,15 @@ BASE_STYLE = """
     .topbar-nav a.active {
         font-weight: 600;
         color: #60a5fa;
+    }
+    .user-pill {
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #111827;
+        border: 1px solid #4b5563;
+        color: #e5e7eb;
+        font-size: 0.78rem;
+        margin-right: 4px;
     }
     .page {
         flex: 1;
@@ -130,15 +165,18 @@ BASE_STYLE = """
         font-weight: 500;
         color: #374151;
     }
-    input[type="file"] {
+    input[type="file"],
+    input[type="email"],
+    input[type="password"] {
         width: 100%;
         margin-top: 6px;
         margin-bottom: 14px;
         font-size: 0.9rem;
+        padding: 6px 8px;
+        border-radius: 8px;
+        border: 1px solid #d1d5db;
     }
-    .button-row {
-        margin-top: 4px;
-    }
+    .button-row { margin-top: 4px; }
     button {
         background: #2563eb;
         color: #ffffff;
@@ -200,16 +238,8 @@ BASE_STYLE = """
             align-items: flex-start;
             padding: 10px 16px;
         }
-        .topbar-nav {
-            margin-top: 6px;
-        }
-        .topbar-nav a {
-            margin-left: 0;
-            margin-right: 14px;
-        }
-        .card {
-            padding: 18px 16px 20px;
-        }
+        .topbar-nav { margin-top: 6px; }
+        .card { padding: 18px 16px 20px; }
         .footer {
             padding-left: 16px;
             padding-right: 16px;
@@ -219,8 +249,66 @@ BASE_STYLE = """
 
 
 # ------------------------
-# Inline HTML templates
+# HTML templates
 # ------------------------
+
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Login - RealEstate App</title>
+    <style>{{ base_style|safe }}</style>
+</head>
+<body>
+<div class="layout">
+    <header class="topbar">
+        <div class="topbar-title">RealEstate App</div>
+        <nav class="topbar-nav">
+            <span>Login required</span>
+        </nav>
+    </header>
+
+    <main class="page">
+        <section class="card">
+            <h1>Sign in</h1>
+            <p class="subtitle">
+                Access is restricted. Only approved email addresses with a valid access code can use this app.
+            </p>
+
+            {% with messages = get_flashed_messages() %}
+              {% if messages %}
+                {% for msg in messages %}
+                  <div class="flash">{{ msg }}</div>
+                {% endfor %}
+              {% endif %}
+            {% endwith %}
+
+            <form method="post">
+                <label for="email">Work email:</label>
+                <input type="email" id="email" name="email" required>
+
+                <label for="code">Access code:</label>
+                <input type="password" id="code" name="code" required>
+
+                <div class="button-row">
+                    <button type="submit">Sign in</button>
+                </div>
+            </form>
+
+            <p class="muted">
+                If you need access, contact the owner of this tool and request approval by email.
+            </p>
+        </section>
+    </main>
+
+    <footer class="footer">
+        © {{ current_year }} RealEstate App · Ariel Portnik. All rights reserved.
+    </footer>
+</div>
+</body>
+</html>
+"""
 
 INDEX_TEMPLATE = """
 <!DOCTYPE html>
@@ -228,9 +316,7 @@ INDEX_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <title>RealEstate App</title>
-    <style>
-        {{ base_style|safe }}
-    </style>
+    <style>{{ base_style|safe }}</style>
 </head>
 <body>
 <div class="layout">
@@ -240,6 +326,10 @@ INDEX_TEMPLATE = """
             <a href="{{ url_for('prepare_yzer') }}">Prepare file for YZER</a>
             <a href="{{ url_for('duplicates') }}">Duplicates check</a>
             <a href="{{ url_for('gap_check') }}">Tax gap check</a>
+            {% if user_email %}
+                <span class="user-pill">{{ user_email }}</span>
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% endif %}
         </nav>
     </header>
 
@@ -289,9 +379,7 @@ PREPARE_YZER_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <title>Prepare file for YZER - RealEstate App</title>
-    <style>
-        {{ base_style|safe }}
-    </style>
+    <style>{{ base_style|safe }}</style>
 </head>
 <body>
 <div class="layout">
@@ -301,6 +389,10 @@ PREPARE_YZER_TEMPLATE = """
             <a href="{{ url_for('prepare_yzer') }}" class="active">Prepare file for YZER</a>
             <a href="{{ url_for('duplicates') }}">Duplicates check</a>
             <a href="{{ url_for('gap_check') }}">Tax gap check</a>
+            {% if user_email %}
+                <span class="user-pill">{{ user_email }}</span>
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% endif %}
         </nav>
     </header>
 
@@ -354,9 +446,7 @@ DUPLICATES_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <title>Duplicates check - RealEstate App</title>
-    <style>
-        {{ base_style|safe }}
-    </style>
+    <style>{{ base_style|safe }}</style>
 </head>
 <body>
 <div class="layout">
@@ -366,6 +456,10 @@ DUPLICATES_TEMPLATE = """
             <a href="{{ url_for('prepare_yzer') }}">Prepare file for YZER</a>
             <a href="{{ url_for('duplicates') }}" class="active">Duplicates check</a>
             <a href="{{ url_for('gap_check') }}">Tax gap check</a>
+            {% if user_email %}
+                <span class="user-pill">{{ user_email }}</span>
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% endif %}
         </nav>
     </header>
 
@@ -431,9 +525,7 @@ GAP_CHECK_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <title>Tax gap check - RealEstate App</title>
-    <style>
-        {{ base_style|safe }}
-    </style>
+    <style>{{ base_style|safe }}</style>
 </head>
 <body>
 <div class="layout">
@@ -443,6 +535,10 @@ GAP_CHECK_TEMPLATE = """
             <a href="{{ url_for('prepare_yzer') }}">Prepare file for YZER</a>
             <a href="{{ url_for('duplicates') }}">Duplicates check</a>
             <a href="{{ url_for('gap_check') }}" class="active">Tax gap check</a>
+            {% if user_email %}
+                <span class="user-pill">{{ user_email }}</span>
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% endif %}
         </nav>
     </header>
 
@@ -490,7 +586,7 @@ GAP_CHECK_TEMPLATE = """
     </main>
 
     <footer class="footer">
-        © {{ current_year }} RealEstate App · Ariel Portnik
+        © {{ current_year }} RealEstate App · Ariel Portnik. All rights reserved.
     </footer>
 </div>
 </body>
@@ -499,25 +595,61 @@ GAP_CHECK_TEMPLATE = """
 
 
 # ------------------------
-# Routes
+# Auth routes
+# ------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "GET":
+        return render_template_string(
+            LOGIN_TEMPLATE,
+            base_style=BASE_STYLE,
+            current_year=CURRENT_YEAR,
+        )
+
+    email = request.form.get("email", "").strip().lower()
+    code = request.form.get("code", "").strip()
+
+    if email in [e.lower() for e in ALLOWED_EMAILS] and code == ACCESS_CODE:
+        session["user_email"] = email
+        flash("Signed in successfully.")
+        return redirect(url_for("index"))
+
+    flash("Invalid email or access code.")
+    return redirect(url_for("login"))
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    flash("You have been signed out.")
+    return redirect(url_for("login"))
+
+
+# ------------------------
+# Main routes (protected)
 # ------------------------
 
 @app.route("/")
+@login_required
 def index():
     return render_template_string(
         INDEX_TEMPLATE,
         base_style=BASE_STYLE,
         current_year=CURRENT_YEAR,
+        user_email=session.get("user_email"),
     )
 
 
 @app.route("/prepare-yzer", methods=["GET", "POST"])
+@login_required
 def prepare_yzer():
     if request.method == "GET":
         return render_template_string(
             PREPARE_YZER_TEMPLATE,
             base_style=BASE_STYLE,
             current_year=CURRENT_YEAR,
+            user_email=session.get("user_email"),
         )
 
     if "file" not in request.files:
@@ -559,12 +691,14 @@ def prepare_yzer():
 
 
 @app.route("/duplicates", methods=["GET", "POST"])
+@login_required
 def duplicates():
     if request.method == "GET":
         return render_template_string(
             DUPLICATES_TEMPLATE,
             base_style=BASE_STYLE,
             current_year=CURRENT_YEAR,
+            user_email=session.get("user_email"),
         )
 
     if "file" not in request.files:
@@ -618,12 +752,14 @@ def duplicates():
 
 
 @app.route("/gap-check", methods=["GET", "POST"])
+@login_required
 def gap_check():
     if request.method == "GET":
         return render_template_string(
             GAP_CHECK_TEMPLATE,
             base_style=BASE_STYLE,
             current_year=CURRENT_YEAR,
+            user_email=session.get("user_email"),
         )
 
     if "scan_file" not in request.files or "tax_file" not in request.files:
@@ -678,10 +814,6 @@ def gap_check():
         flash(f"Error during tax gap check: {e}")
         return redirect(request.url)
 
-
-# ------------------------
-# Entry point
-# ------------------------
 
 if __name__ == "__main__":
     app.run(debug=True)
