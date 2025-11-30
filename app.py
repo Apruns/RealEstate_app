@@ -1,8 +1,7 @@
-# app.py
+# app.py – public version, no login
 
 import os
 from datetime import datetime
-from functools import wraps
 
 from flask import (
     Flask,
@@ -12,11 +11,7 @@ from flask import (
     render_template_string,
     send_file,
     flash,
-    session,
 )
-
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
 from core.file_loader import load_scan_file, load_ram_file
 from core.yzer_preparation import prepare_yzer_file, export_yzer
@@ -29,141 +24,16 @@ from core.gap_checker import find_missing_transactions
 # ----------------------------------------------------------------------
 app = Flask(__name__)
 
-# Secret key for sessions and flash messages
+# Secret key for flash messages
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "realestate-app-secret-key")
 
 CURRENT_YEAR = datetime.now().year
-
-# Access code – shared between all users
-ACCESS_CODE = os.getenv("ACCESS_CODE", "12345")
-
-# Admin token for approval links (for n8n or manual use)
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "change-this-admin-token")
-
-# Optional: hard-coded whitelist used only when DATABASE_URL is missing
-ALLOWED_EMAILS = [
-    "ariel.portnik@gmail.com",
-    "arielpo@yad2.co.il"]
-
-# Database connection string from Render
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-
-# ----------------------------------------------------------------------
-# Database helpers
-# ----------------------------------------------------------------------
-def get_db_connection():
-    """
-    Open a new connection to the PostgreSQL database using DATABASE_URL.
-    """
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set")
-
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
-
-
-def init_db():
-    """
-    Create the 'users' table if it does not exist.
-    Used for login approvals (pending/approved/blocked).
-    """
-    if not DATABASE_URL:
-        # When running locally without DB, skip silently
-        print("DATABASE_URL not set, skipping init_db()")
-        return
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            status TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-        """
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-    print("users table is ready (init_db)")
-
-
-def get_user_by_email(email: str):
-    """
-    Return a user row as dict or None.
-    """
-    if not DATABASE_URL:
-        return None
-
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE email = %s;", (email,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
-
-
-def create_user(email: str, status: str = "pending"):
-    """
-    Insert a new user with given status.
-    """
-    if not DATABASE_URL:
-        return
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO users (email, status) VALUES (%s, %s) "
-        "ON CONFLICT (email) DO NOTHING;",
-        (email, status),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def update_user_status(email: str, status: str):
-    """
-    Update user status (pending / approved / blocked).
-    """
-    if not DATABASE_URL:
-        return
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET status = %s WHERE email = %s;", (status, email))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-# ----------------------------------------------------------------------
-# Authentication helpers
-# ----------------------------------------------------------------------
-def login_required(view_func):
-    """
-    Decorator to enforce login for protected routes.
-    """
-    @wraps(view_func)
-    def wrapped(*args, **kwargs):
-        if "user_email" not in session:
-            # Redirect to login and keep the original target
-            next_url = request.path
-            return redirect(url_for("login", next=next_url))
-        return view_func(*args, **kwargs)
-
-    return wrapped
 
 
 def render_base_page(title: str, body_html: str):
     """
     Helper to render a simple Bootstrap layout with consistent header.
     """
-    user_email = session.get("user_email")
     year = CURRENT_YEAR
 
     template = """
@@ -213,18 +83,9 @@ def render_base_page(title: str, body_html: str):
                 <a class="nav-link" href="{{ url_for('gap_check') }}">Tax gap check</a>
               </li>
             </ul>
-            <span class="navbar-text me-3">
-              {% if user_email %}
-                Logged in as <strong>{{ user_email }}</strong>
-              {% else %}
-                Not logged in
-              {% endif %}
+            <span class="navbar-text">
+              Public access – no login required
             </span>
-            {% if user_email %}
-              <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logout') }}">Logout</a>
-            {% else %}
-              <a class="btn btn-primary btn-sm" href="{{ url_for('login') }}">Login</a>
-            {% endif %}
           </div>
         </div>
       </nav>
@@ -255,157 +116,9 @@ def render_base_page(title: str, body_html: str):
     return render_template_string(
         template,
         title=title,
-        user_email=user_email,
         body_html=body_html,
         year=year,
     )
-
-
-
-# ----------------------------------------------------------------------
-# Authentication routes
-# ----------------------------------------------------------------------
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    """
-    Login form:
-    - User enters email + access code.
-    - If DATABASE_URL exists:
-        - New email -> create user with status 'pending' and show message.
-        - Existing email:
-            - 'approved' -> login.
-            - 'pending'  -> inform still pending.
-            - 'blocked'  -> deny.
-    - If DATABASE_URL is missing:
-        - Fall back to ALLOWED_EMAILS list.
-    """
-    next_url = request.args.get("next") or url_for("home")
-
-    if request.method == "POST":
-        email = (request.form.get("email") or "").strip().lower()
-        code = (request.form.get("access_code") or "").strip()
-
-        if not email or not code:
-            flash("Please provide both email and access code.")
-            return redirect(url_for("login", next=next_url))
-
-        if code != ACCESS_CODE:
-            flash("Access code is incorrect.")
-            return redirect(url_for("login", next=next_url))
-
-        # Path 1: database-based approval
-        if DATABASE_URL:
-            user = get_user_by_email(email)
-
-            if user is None:
-                # First time: create as pending and do not log in yet
-                create_user(email, status="pending")
-                flash(
-                    "Your request was received. Your email is now pending approval. "
-                    "You will be able to log in after it is approved."
-                )
-                return redirect(url_for("login", next=next_url))
-
-            status = user["status"]
-
-            if status == "blocked":
-                flash("Your access is blocked. Please contact the administrator.")
-                return redirect(url_for("login", next=next_url))
-
-            if status == "pending":
-                flash("Your email is still pending approval. Please try again later.")
-                return redirect(url_for("login", next=next_url))
-
-            if status == "approved":
-                session["user_email"] = email
-                flash("Login successful.")
-                return redirect(next_url)
-
-            # Safety fallback
-            flash("Unknown user status. Please contact the administrator.")
-            return redirect(url_for("login", next=next_url))
-
-        # Path 2: no database – fallback to hard-coded list
-        if email not in ALLOWED_EMAILS:
-            flash("Your email is not in the approved list.")
-            return redirect(url_for("login", next=next_url))
-
-        session["user_email"] = email
-        flash("Login successful.")
-        return redirect(next_url)
-
-    # GET request – show login form
-    body = """
-    <div class="row justify-content-center">
-      <div class="col-md-6 col-lg-4">
-        <h1 class="h4 mb-3">Login</h1>
-        <p class="text-muted">
-          Enter your work email and the shared access code.<br>
-          New emails will be marked as <strong>pending</strong> until approved.
-        </p>
-        <form method="post">
-          <div class="mb-3">
-            <label for="email" class="form-label">Email address</label>
-            <input type="email" class="form-control" id="email" name="email"
-                   placeholder="name@example.com" required>
-          </div>
-          <div class="mb-3">
-            <label for="access_code" class="form-label">Access code</label>
-            <input type="password" class="form-control" id="access_code"
-                   name="access_code" required>
-          </div>
-          <button type="submit" class="btn btn-primary w-100">Login</button>
-        </form>
-      </div>
-    </div>
-    """
-    return render_base_page("Login", body)
-
-
-@app.route("/logout")
-def logout():
-    session.clear()
-    flash("You have been logged out.")
-    return redirect(url_for("home"))
-
-
-# ----------------------------------------------------------------------
-# Admin endpoints for approval (for future n8n integration)
-# ----------------------------------------------------------------------
-@app.route("/admin/approve")
-def admin_approve():
-    """
-    Approve a user by email.
-    Intended to be called from an email link or n8n webhook.
-
-    Example URL:
-    /admin/approve?token=ADMIN_TOKEN&email=user@example.com
-    """
-    token = request.args.get("token")
-    email = (request.args.get("email") or "").strip().lower()
-
-    if token != ADMIN_TOKEN or not email:
-        return "Unauthorized", 403
-
-    update_user_status(email, "approved")
-    return f"User {email} approved."
-
-
-@app.route("/admin/block")
-def admin_block():
-    """
-    Block a user by email.
-    Example:
-    /admin/block?token=ADMIN_TOKEN&email=user@example.com
-    """
-    token = request.args.get("token")
-    email = (request.args.get("email") or "").strip().lower()
-
-    if token != ADMIN_TOKEN or not email:
-        return "Unauthorized", 403
-
-    update_user_status(email, "blocked")
-    return f"User {email} blocked."
 
 
 # ----------------------------------------------------------------------
@@ -437,7 +150,6 @@ def home():
 
 # ------------- Prepare file for YZER -----------------------------------
 @app.route("/prepare-yzer", methods=["GET", "POST"])
-@login_required
 def prepare_yzer():
     if request.method == "POST":
         file = request.files.get("scan_file")
@@ -478,7 +190,6 @@ def prepare_yzer():
 
 # ------------- Duplicates check ---------------------------------------
 @app.route("/duplicates", methods=["GET", "POST"])
-@login_required
 def duplicates_check():
     if request.method == "POST":
         file = request.files.get("scan_file")
@@ -518,8 +229,8 @@ def duplicates_check():
       Upload a scan file (Excel or CSV). The app will:
     </p>
     <ul>
-      <li>Use the latest <code>scan_date</code> in the file.</li>
-      <li>Filter to <code>sold_part = 1</code>.</li>
+      <li>Use the latest <code>scan_date</code> in the file (if exists).</li>
+      <li>Filter to <code>sold_part = 1</code> (if exists).</li>
       <li>Group by: <code>block_lot, sale_day, declared_profit, sold_part, city,
           build_year, building_mr, rooms_number, scan_date</code>.</li>
       <li>Return only combinations that appear more than once.</li>
@@ -557,7 +268,6 @@ def duplicates_check():
 
 # ------------- Tax gap check (data reconciliation) --------------------
 @app.route("/gap-check", methods=["GET", "POST"])
-@login_required
 def gap_check():
     if request.method == "POST":
         scan_file = request.files.get("scan_file")
@@ -625,9 +335,6 @@ def gap_check():
 # ----------------------------------------------------------------------
 # App startup
 # ----------------------------------------------------------------------
-# Initialize database schema on startup (only if DATABASE_URL is set)
-init_db()
-
 if __name__ == "__main__":
     # Local development server
     app.run(debug=True, host="0.0.0.0", port=5000)
