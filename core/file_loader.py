@@ -1,123 +1,112 @@
-# core/file_loader.py
-
 import os
+from io import BytesIO
+
 import pandas as pd
 
 
-# Mapping from Hebrew RAMI column names to the internal English schema
-RAMI_COLUMN_MAP = {
-    "גוש חלקה": "block_lot",
-    "יום מכירה": "sale_day",
-    'תמורה מוצהרת בש"ח': "declared_profit",
-    'שווי מכירה בש"ח': "sale_profit",
-    "מהות": "property_type",
-    "חלק נמכר": "sold_part",
-    "ישוב": "city",
-    "שנת בניה": "build_year",
-    "שטח": "building_mr",   # ✅ fixed: was 'area', now 'building_mr'
-    "חדרים": "rooms_number",
-}
-
-
-def _normalize_rami_columns(df: pd.DataFrame) -> pd.DataFrame:
+def load_scan_file(file_storage):
     """
-    Rename RAMI columns from Hebrew to the internal English names.
+    Load a 'scan file' (internal data) from an uploaded file.
 
-    The function only renames a column if:
-    - The Hebrew name exists in df.columns, and
-    - The English target name does NOT already exist
-      (to avoid overwriting if the file is already in English).
+    Supported formats:
+    - .csv
+    - .xlsx / .xls (normal Excel)
+
+    Returns a pandas DataFrame with the original columns.
     """
-    rename_map = {}
-    for heb, eng in RAMI_COLUMN_MAP.items():
-        if heb in df.columns and eng not in df.columns:
-            rename_map[heb] = eng
+    filename = (file_storage.filename or "").lower()
 
-    if rename_map:
-        df = df.rename(columns=rename_map)
+    if filename.endswith(".csv"):
+        # CSV scan file
+        df = pd.read_csv(file_storage)
+        return df
 
+    if filename.endswith(".xlsx") or filename.endswith(".xls"):
+        # Standard Excel scan file
+        df = pd.read_excel(file_storage)
+        return df
+
+    # Fallback: try to read as Excel
+    df = pd.read_excel(file_storage)
     return df
 
 
-def load_scan_file(path: str) -> pd.DataFrame:
+def load_ram_file(file_storage):
     """
-    Load a scan file (Excel or CSV) and return it as a DataFrame.
-    This is used for internal Yad2 scan files.
+    Load a 'Tax Authority' (RAMI) file from an uploaded file.
+
+    The file may be:
+    - A normal Excel (.xlsx / .xls)
+    - An HTML-style .xls exported from the Tax Authority site
+
+    This function:
+    1. Reads the table.
+    2. Renames Hebrew columns to our internal English names.
+    3. Returns a DataFrame with at least these columns (if they exist in source):
+       - block_lot
+       - sale_day
+       - declared_profit
+       - sale_profit
+       - property_type
+       - sold_part
+       - city
+       - build_year
+       - building_mr
+       - rooms_number
     """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Scan file not found: {path}")
+    filename = (file_storage.filename or "").lower()
 
-    lower = path.lower()
+    # Read file content into bytes (so we can reuse it for html/excel parsing)
+    raw_bytes = file_storage.read()
+    file_storage.seek(0)  # reset pointer for any future use
 
-    if lower.endswith(".xlsx") or lower.endswith(".xls"):
-        return pd.read_excel(path)
-    elif lower.endswith(".csv"):
-        return pd.read_csv(path)
-    else:
-        raise ValueError(f"Unsupported scan file type: {path}")
-
-
-def load_rami_file(path: str) -> pd.DataFrame:
-    """
-    Load a Tax Authority (RAMI) file and return a DataFrame
-    with normalized column names (English).
-
-    Supported cases:
-    - Real Excel: .xlsx / .xls
-    - "Fake Excel": HTML content saved with .xls extension
-    - HTML: .html / .htm
-
-    For .xls/.xlsx:
-      1. Try pd.read_excel
-      2. If that fails, fall back to pd.read_html and take the first table
-    """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"RAMI file not found: {path}")
-
-    lower = path.lower()
-
-    # Excel-like extensions
-    if lower.endswith(".xlsx") or lower.endswith(".xls"):
-        # Try native Excel first
-        try:
-            df = pd.read_excel(path)
-        except Exception:
-            # Fall back to HTML parsing (common for "Excel-like" HTML files)
-            tables = pd.read_html(path)
-            if not tables:
-                raise ValueError(f"Could not read RAMI file as Excel or HTML: {path}")
-            df = tables[0]
-
-        return _normalize_rami_columns(df)
-
-    # HTML extensions
-    if lower.endswith(".html") or lower.endswith(".htm"):
-        tables = pd.read_html(path)
+    # Decide how to parse
+    if filename.endswith(".xlsx"):
+        # Standard Excel
+        df = pd.read_excel(BytesIO(raw_bytes))
+    elif filename.endswith(".csv"):
+        # Rare case: RAMI as CSV
+        df = pd.read_csv(BytesIO(raw_bytes))
+    elif filename.endswith(".xls") or filename.endswith(".html") or filename.endswith(".htm"):
+        # Very common RAMI format: .xls that is actually HTML
+        # read_html will parse tables out of the HTML
+        tables = pd.read_html(raw_bytes)
         if not tables:
-            raise ValueError(f"No tables found in RAMI HTML file: {path}")
-        df = tables[0]
-        return _normalize_rami_columns(df)
-
-    # Unsupported
-    raise ValueError(f"Unsupported RAMI file type: {path}")
-
-
-if __name__ == "__main__":
-    """
-    Optional manual test (update paths before running).
-    """
-    scan_path = r"C:\Ariel Portnik\RealEstate_app\examples\yad2_scan_2025_10.xlsx"
-    rami_path = r"C:\Ariel Portnik\RealEstate_app\examples\קריית שמונה - 27_05_2025 - 27_08_2025.xls"
-
-    if os.path.exists(scan_path):
-        df_scan = load_scan_file(scan_path)
-        print("Scan file loaded. Shape:", df_scan.shape)
+            # Fallback: try Excel engine anyway
+            df = pd.read_excel(BytesIO(raw_bytes))
+        else:
+            # Take the largest table (usually the deals table)
+            df = max(tables, key=lambda t: len(t))
     else:
-        print("Scan test file not found (update path in file_loader.py).")
+        # Unknown extension – try excel as a best guess
+        df = pd.read_excel(BytesIO(raw_bytes))
 
-    if os.path.exists(rami_path):
-        df_rami = load_rami_file(rami_path)
-        print("RAMI file loaded. Shape:", df_rami.shape)
-        print("RAMI columns after mapping:", list(df_rami.columns))
-    else:
-        print("RAMI test file not found (update path in file_loader.py).")
+    # Mapping from Hebrew column names to our internal schema
+    hebrew_to_internal = {
+        "גוש חלקה": "block_lot",
+        "יום מכירה": "sale_day",
+        "תמורה מוצהרת בש\"ח": "declared_profit",
+        "שווי מכירה בש\"ח": "sale_profit",
+        "מהות": "property_type",
+        "חלק נמכר": "sold_part",
+        "ישוב": "city",
+        "שנת בניה": "build_year",
+        "שטח": "building_mr",
+        "חדרים": "rooms_number",
+    }
+
+    # Rename any columns that match the Hebrew names
+    df = df.rename(columns=hebrew_to_internal)
+
+    # Keep only the columns we care about (if they exist)
+    desired_cols = list(hebrew_to_internal.values())
+    existing_cols = [c for c in desired_cols if c in df.columns]
+
+    if not existing_cols:
+        # If mapping failed completely, just return the original df
+        # (This will help us debug on real files if needed)
+        return df
+
+    df = df[existing_cols].copy()
+
+    return df
