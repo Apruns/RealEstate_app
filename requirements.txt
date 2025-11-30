@@ -1,10 +1,7 @@
 flask
+gunicorn
 pandas
 numpy
 openpyxl
 lxml
-gunicorn
-datetime
-tempfile
-os
-typing
+beautifulsoup4
