@@ -1,0 +1,10 @@
+flask
+pandas
+numpy
+openpyxl
+lxml
+gunicorn
+datetime
+tempfile
+os
+typing
