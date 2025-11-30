@@ -34,7 +34,7 @@ CURRENT_YEAR = datetime.now().year
 
 # ✅ EDIT THIS LIST – add the emails you want to approve
 ALLOWED_EMAILS = [
-    "ariel.portnik@g,ail.com", "arielpo@yad2.co.il", "afiki@yad2.co.il"
+    "ariel.portnik@gmail.com", "arielpo@yad2.co.il", "afiki@yad2.co.il", "kristinam@yad2.co.il", "mazal@yad2.co.il"
 ]
 
 # Access code. On Render you can override this with an env var ACCESS_CODE.
