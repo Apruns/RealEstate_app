@@ -1,6 +1,23 @@
-# core/duplicates_checker.py
+"""
+Logic for detecting duplicate real-estate transactions in a scan file.
 
-from typing import Tuple, Optional, List
+The goal is to mimic the SQL logic:
+
+SELECT block_lot,sale_day,declared_profit,sold_part,city, build_year,
+       building_mr, rooms_number ,count(*) as count,scan_date
+FROM raw_gov_deals.real_estate_deals
+WHERE scan_date = <latest_scan_date>
+  AND sold_part = 1
+GROUP BY block_lot,sale_day,declared_profit,sold_part,city,
+         build_year,building_mr,rooms_number,scan_date
+HAVING count(*) > 1
+ORDER BY count DESC;
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional
+
 import pandas as pd
 
 
@@ -18,177 +35,126 @@ DUPLICATE_KEY_COLUMNS: List[str] = [
 ]
 
 
-def _ensure_columns_exist(df: pd.DataFrame, columns: List[str]) -> None:
+def _filter_latest_scan(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Verify that all required columns exist in the DataFrame.
-    Raise a clear error listing any missing columns.
-    """
-    missing = [c for c in columns if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns for duplicates check: {missing}")
-
-
-def _filter_latest_scan(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[str]]:
-    """
-    Filter the DataFrame to keep only rows from the latest scan_date.
-
-    If 'scan_date' does not exist, the original DataFrame is returned.
-    If scan_date can be parsed as dates, the maximum date is used.
-    Otherwise the maximum value (lexicographic) is used.
-
-    Returns
-    -------
-    filtered_df : pd.DataFrame
-        DataFrame filtered to the latest scan_date (or unchanged).
-    latest_scan_value : Optional[str]
-        The value of the latest scan_date used for filtering (as string),
-        or None if no filtering was performed.
+    If 'scan_date' exists, keep only rows with the latest scan_date.
+    Otherwise, return the DataFrame as-is.
     """
     if "scan_date" not in df.columns:
-        # Nothing to filter by, just return a copy
-        return df.copy(), None
+        return df
 
-    # Try to parse as datetime (day-first, typical Israeli format)
-    scan_dt = pd.to_datetime(df["scan_date"], errors="coerce", dayfirst=True)
-
-    if scan_dt.notna().any():
-        latest_dt = scan_dt.max()
-        mask = scan_dt == latest_dt
-        filtered = df.loc[mask].copy()
-        latest_value = latest_dt.strftime("%Y-%m-%d")
-        return filtered, latest_value
-    else:
-        # Fallback: treat scan_date as plain string/value
-        latest_raw = df["scan_date"].max()
-        mask = df["scan_date"] == latest_raw
-        filtered = df.loc[mask].copy()
-        latest_value = str(latest_raw)
-        return filtered, latest_value
+    # Try to parse scan_date to datetime if it looks like a string
+    try:
+        scan_dt = pd.to_datetime(df["scan_date"], errors="coerce", dayfirst=True)
+        latest = scan_dt.max()
+        mask = scan_dt == latest
+        return df.loc[mask].copy()
+    except Exception:
+        # If parsing fails, fall back to 'max' on the raw column
+        latest = df["scan_date"].max()
+        return df.loc[df["scan_date"] == latest].copy()
 
 
-def _filter_sold_part_equals_one(df: pd.DataFrame) -> pd.DataFrame:
+def _filter_sold_part_one(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Filter DataFrame to keep only rows where sold_part = 1.
-
-    Handles sold_part stored as string or numeric. Invalid values are ignored.
+    If 'sold_part' column exists, keep only rows where sold_part == 1.
+    Otherwise, return as-is.
     """
     if "sold_part" not in df.columns:
-        raise ValueError("Column 'sold_part' is required for duplicates check but was not found.")
+        return df
 
-    sold_numeric = pd.to_numeric(df["sold_part"], errors="coerce")
-    mask = sold_numeric == 1
-    return df.loc[mask].copy()
+    return df.loc[df["sold_part"] == 1].copy()
 
 
-def find_duplicates_summary(df_raw: pd.DataFrame) -> pd.DataFrame:
+def _prepare_base_duplicates_df(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Replicate the SQL logic:
-
-        SELECT block_lot, sale_day, declared_profit, sold_part, city, build_year,
-               building_mr, rooms_number, COUNT(*) AS count, scan_date
-        FROM ...
-        WHERE scan_date = <latest scan_date in file>
-          AND sold_part = 1
-        GROUP BY block_lot, sale_day, declared_profit, sold_part, city, build_year,
-                 building_mr, rooms_number, scan_date
-        HAVING COUNT(*) > 1
-        ORDER BY count DESC
-
-    Parameters
-    ----------
-    df_raw : pd.DataFrame
-        Raw scan DataFrame loaded from Excel/CSV.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per duplicate group:
-        [block_lot, sale_day, declared_profit, sold_part, city, build_year,
-         building_mr, rooms_number, scan_date, count]
+    Apply the standard filters before duplicate detection:
+    - latest scan_date (if present)
+    - sold_part == 1       (if present)
     """
-    # 1) Verify that all required columns exist
-    _ensure_columns_exist(df_raw, DUPLICATE_KEY_COLUMNS)
+    base = df.copy()
 
-    # 2) Filter to latest scan_date
-    df_latest, latest_scan = _filter_latest_scan(df_raw)
+    # 1. Filter to latest scan_date
+    base = _filter_latest_scan(base)
 
-    # 3) Filter to sold_part = 1
-    df_latest = _filter_sold_part_equals_one(df_latest)
+    # 2. Filter to sold_part == 1
+    base = _filter_sold_part_one(base)
 
-    if df_latest.empty:
-        # No rows to group – return empty with the expected columns
-        summary = pd.DataFrame(columns=DUPLICATE_KEY_COLUMNS + ["count"])
-        return summary
+    return base
 
-    # 4) Group by the key columns and count occurrences
+
+def find_duplicate_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a summary of duplicate groups:
+
+    - Uses only the latest scan_date (if scan_date column exists).
+    - Uses only sold_part == 1 (if sold_part column exists).
+    - Groups by all DUPLICATE_KEY_COLUMNS that exist in df.
+    - Keeps only groups with count > 1.
+    - Returns one row per duplicate combination + 'count' column.
+    """
+    base = _prepare_base_duplicates_df(df)
+
+    # Determine which key columns actually exist in the DataFrame
+    key_cols = [c for c in DUPLICATE_KEY_COLUMNS if c in base.columns]
+    if not key_cols:
+        # If none of the expected columns exist, there is nothing meaningful to group by
+        return pd.DataFrame()
+
     grouped = (
-        df_latest
-        .groupby(DUPLICATE_KEY_COLUMNS, dropna=False)
+        base
+        .groupby(key_cols, dropna=False)
         .size()
         .reset_index(name="count")
     )
 
-    # 5) Keep only groups with count > 1 (duplicates)
-    duplicates_summary = grouped[grouped["count"] > 1].copy()
+    # Keep only combinations that appear more than once
+    duplicates_summary = grouped.loc[grouped["count"] > 1].copy()
 
-    # 6) Sort by count descending (same as ORDER BY count DESC)
+    # Sort by count descending
     duplicates_summary = duplicates_summary.sort_values(
-        by="count",
-        ascending=False
+        by="count", ascending=False
     )
+
+    # Reset index for neat output
+    duplicates_summary = duplicates_summary.reset_index(drop=True)
 
     return duplicates_summary
 
 
-def find_duplicate_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
+def find_duplicate_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Alternative view: instead of one row per duplicate group,
-    return all original rows that belong to duplicate groups.
+    Return all rows that belong to duplicate groups.
 
-    This is useful if you want to inspect the actual records, not just the summary.
-
-    Logic:
-    1. Filter to latest scan_date.
-    2. Filter to sold_part = 1.
-    3. Mark rows where the key combination appears more than once.
+    - Same logic as find_duplicate_summary regarding filters and keys.
+    - Finds all keys with count > 1, then returns the full rows from the filtered DataFrame.
     """
-    _ensure_columns_exist(df_raw, DUPLICATE_KEY_COLUMNS)
+    base = _prepare_base_duplicates_df(df)
 
-    df_latest, latest_scan = _filter_latest_scan(df_raw)
-    df_latest = _filter_sold_part_equals_one(df_latest)
+    key_cols = [c for c in DUPLICATE_KEY_COLUMNS if c in base.columns]
+    if not key_cols:
+        return pd.DataFrame()
 
-    if df_latest.empty:
-        return df_latest.copy()  # empty
+    # First, compute summary counts
+    grouped = (
+        base
+        .groupby(key_cols, dropna=False)
+        .size()
+        .reset_index(name="count")
+    )
+    dup_keys = grouped.loc[grouped["count"] > 1, key_cols]
 
-    # Mark duplicate rows based on the key columns
-    dup_mask = df_latest.duplicated(subset=DUPLICATE_KEY_COLUMNS, keep=False)
-    duplicate_rows = df_latest.loc[dup_mask].copy()
+    if dup_keys.empty:
+        # No duplicates according to our definition
+        return pd.DataFrame(columns=base.columns)
 
-    # Optional: sort by the key columns for easier inspection
-    duplicate_rows = duplicate_rows.sort_values(by=DUPLICATE_KEY_COLUMNS)
+    # Join back to get all rows that match duplicate key combinations
+    merged = base.merge(dup_keys, on=key_cols, how="inner")
 
-    return duplicate_rows
+    # Optional: order by the same key columns + maybe declared_profit or sale_day
+    sort_cols: List[str] = [c for c in key_cols if c in merged.columns]
+    if sort_cols:
+        merged = merged.sort_values(by=sort_cols)
 
-
-if __name__ == "__main__":
-    """
-    Manual test example.
-    Update `test_path` to point to a real scan file (Excel/CSV) before running.
-    """
-    import os
-
-    from core.file_loader import load_scan_file  # adjust import if needed
-
-    test_path = r"C:\Ariel Portnik\matan_deals\yad2_scan_example.xlsx"
-
-    if os.path.exists(test_path):
-        df_scan = load_scan_file(test_path)
-        dup_summary = find_duplicates_summary(df_scan)
-        print("=== Duplicate groups summary ===")
-        print(dup_summary.head(20))
-
-        dup_rows = find_duplicate_rows(df_scan)
-        print("\n=== Duplicate rows (first 20) ===")
-        print(dup_rows.head(20))
-    else:
-        print(f"Test file not found: {test_path}")
+    merged = merged.reset_index(drop=True)
+    return merged
