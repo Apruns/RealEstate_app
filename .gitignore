@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-.env
-.vscode/
-*.xlsx
-*.xls
-*.csv
-*.html
-*.htm

@@ -1,28 +1,18 @@
-"""
-Logic for detecting duplicate real-estate transactions in a scan file.
+# core/duplicates_checker.py
 
-The goal is to mimic the SQL logic:
-
-SELECT block_lot,sale_day,declared_profit,sold_part,city, build_year,
-       building_mr, rooms_number ,count(*) as count,scan_date
-FROM raw_gov_deals.real_estate_deals
-WHERE scan_date = <latest_scan_date>
-  AND sold_part = 1
-GROUP BY block_lot,sale_day,declared_profit,sold_part,city,
-         build_year,building_mr,rooms_number,scan_date
-HAVING count(*) > 1
-ORDER BY count DESC;
-"""
-
-from __future__ import annotations
-
-from typing import List, Optional
+import os
+from datetime import date
+from typing import Dict, Any, List, Tuple, Optional
 
 import pandas as pd
 
 
-# Columns used to define a "duplicate group"
-DUPLICATE_KEY_COLUMNS: List[str] = [
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
+
+# העמודות שעל פיהן מזהים כפילויות – חייבות להיות קיימות בקובץ
+DUP_KEY_COLUMNS: List[str] = [
     "block_lot",
     "sale_day",
     "declared_profit",
@@ -35,126 +25,172 @@ DUPLICATE_KEY_COLUMNS: List[str] = [
 ]
 
 
-def _filter_latest_scan(df: pd.DataFrame) -> pd.DataFrame:
+# ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
+
+def _read_scan_file(scan_path: str) -> pd.DataFrame:
     """
-    If 'scan_date' exists, keep only rows with the latest scan_date.
-    Otherwise, return the DataFrame as-is.
+    קורא את קובץ הסריקה (CSV / Excel) ומחזיר DataFrame.
+    אין כאן ניקוי או המרה – רק טעינה.
     """
-    if "scan_date" not in df.columns:
-        return df
+    ext = os.path.splitext(scan_path)[1].lower()
 
-    # Try to parse scan_date to datetime if it looks like a string
-    try:
-        scan_dt = pd.to_datetime(df["scan_date"], errors="coerce", dayfirst=True)
-        latest = scan_dt.max()
-        mask = scan_dt == latest
-        return df.loc[mask].copy()
-    except Exception:
-        # If parsing fails, fall back to 'max' on the raw column
-        latest = df["scan_date"].max()
-        return df.loc[df["scan_date"] == latest].copy()
+    if ext == ".csv":
+        # לא מכריח dtype=str – נותן לפנדהס לנחש, אנחנו נטפל בעמודות החשובות ידנית
+        df = pd.read_csv(scan_path)
+    elif ext in (".xls", ".xlsx", ".xlsm"):
+        df = pd.read_excel(scan_path)
+    else:
+        raise ValueError(f"Unsupported file type for duplicates check: {ext}")
+
+    return df
 
 
-def _filter_sold_part_one(df: pd.DataFrame) -> pd.DataFrame:
+def _ensure_required_columns(df: pd.DataFrame) -> None:
+    """מוודא שכל העמודות הדרושות קיימות; אחרת זורק שגיאה ברורה."""
+    missing = [col for col in DUP_KEY_COLUMNS if col not in df.columns]
+    if missing:
+        raise ValueError(
+            "Missing required columns for duplicates check: "
+            + ", ".join(missing)
+        )
+
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+
+def run_duplicates_check(
+    scan_path: str,
+    output_dir: str,
+    sample_limit: int = 100,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
-    If 'sold_part' column exists, keep only rows where sold_part == 1.
-    Otherwise, return as-is.
+    מריץ את תהליך איתור הכפילויות על קובץ סריקה אחד.
+
+    לוגיקה:
+      1. קריאת הקובץ.
+      2. מציאת תאריך ה-scan האחרון בעמודה scan_date.
+      3. סינון לשורות:
+           - scan_date == latest_scan_date
+           - sold_part == 1
+      4. GROUP BY על כל עמודות המפתח (כולל scan_date) וספירת שורות.
+      5. שמירת קבוצות עם dup_count > 1 בלבד.
+      6. Merge חזרה ל-DataFrame לקבלת כל השורות הכפולות בפועל.
+      7. שמירת קובץ CSV עם כל הכפילויות והחזרת סטטיסטיקות + sample rows.
+
+    מחזיר:
+      results: dict עם נתונים לסיכום במסך.
+      sample_rows: רשימת dict-ים לתצוגה בטבלה (עד sample_limit שורות).
     """
-    if "sold_part" not in df.columns:
-        return df
+    os.makedirs(output_dir, exist_ok=True)
 
-    return df.loc[df["sold_part"] == 1].copy()
+    # --- Step 1: Read file ---
+    df = _read_scan_file(scan_path)
+    rows_before = int(len(df))
 
+    # --- Step 2: Ensure required columns exist ---
+    _ensure_required_columns(df)
 
-def _prepare_base_duplicates_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply the standard filters before duplicate detection:
-    - latest scan_date (if present)
-    - sold_part == 1       (if present)
-    """
-    base = df.copy()
+    # --- Step 3: Parse latest scan_date ---
+    # שומר גם את ערך המחרוזת המקורי וגם את ה-parsed
+    scan_parsed = pd.to_datetime(df["scan_date"], errors="coerce", dayfirst=True)
+    if scan_parsed.isna().all():
+        raise ValueError("Could not parse any valid dates in 'scan_date' column.")
 
-    # 1. Filter to latest scan_date
-    base = _filter_latest_scan(base)
+    latest_scan_ts = scan_parsed.max()
+    latest_scan_date = latest_scan_ts.date()  # לשימוש בסיכום / תצוגה
 
-    # 2. Filter to sold_part == 1
-    base = _filter_sold_part_one(base)
+    # --- Step 4: Filter to latest scan_date & sold_part = 1 ---
+    sold_numeric = pd.to_numeric(df["sold_part"], errors="coerce")
+    mask = (scan_parsed == latest_scan_ts) & (sold_numeric == 1)
 
-    return base
+    df_filtered = df.loc[mask].copy()
+    rows_after_filter = int(len(df_filtered))
 
+    if rows_after_filter == 0:
+        # אין שורות לסרוק – מחזירים סטטיסטיקות בלבד, ללא כפילויות
+        results = {
+            "rows_before": rows_before,
+            "rows_after_filter": rows_after_filter,
+            "latest_scan_date": latest_scan_date.isoformat(),
+            "duplicate_groups": 0,
+            "duplicate_rows": 0,
+            "key_columns": DUP_KEY_COLUMNS,
+            "output_filename": None,
+            "output_path": None,
+        }
+        return results, []
 
-def find_duplicate_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a summary of duplicate groups:
+    # --- Step 5: Group by key columns and count ---
+    group_cols = DUP_KEY_COLUMNS
 
-    - Uses only the latest scan_date (if scan_date column exists).
-    - Uses only sold_part == 1 (if sold_part column exists).
-    - Groups by all DUPLICATE_KEY_COLUMNS that exist in df.
-    - Keeps only groups with count > 1.
-    - Returns one row per duplicate combination + 'count' column.
-    """
-    base = _prepare_base_duplicates_df(df)
-
-    # Determine which key columns actually exist in the DataFrame
-    key_cols = [c for c in DUPLICATE_KEY_COLUMNS if c in base.columns]
-    if not key_cols:
-        # If none of the expected columns exist, there is nothing meaningful to group by
-        return pd.DataFrame()
-
-    grouped = (
-        base
-        .groupby(key_cols, dropna=False)
+    dup_groups = (
+        df_filtered
+        .groupby(group_cols, dropna=False)
         .size()
-        .reset_index(name="count")
+        .reset_index(name="dup_count")
     )
 
-    # Keep only combinations that appear more than once
-    duplicates_summary = grouped.loc[grouped["count"] > 1].copy()
+    # HAVING count(*) > 1
+    dup_groups = dup_groups[dup_groups["dup_count"] > 1]
 
-    # Sort by count descending
-    duplicates_summary = duplicates_summary.sort_values(
-        by="count", ascending=False
+    if dup_groups.empty:
+        # יש שורות אחרונות, אבל אין כפילויות
+        results = {
+            "rows_before": rows_before,
+            "rows_after_filter": rows_after_filter,
+            "latest_scan_date": latest_scan_date.isoformat(),
+            "duplicate_groups": 0,
+            "duplicate_rows": 0,
+            "key_columns": DUP_KEY_COLUMNS,
+            "output_filename": None,
+            "output_path": None,
+        }
+        return results, []
+
+    # --- Step 6: Assign group IDs and merge back to actual rows ---
+    dup_groups = dup_groups.reset_index(drop=True)
+    dup_groups["dup_group_id"] = dup_groups.index + 1  # 1..N
+
+    dup_rows = df_filtered.merge(
+        dup_groups[group_cols + ["dup_count", "dup_group_id"]],
+        on=group_cols,
+        how="inner",
     )
 
-    # Reset index for neat output
-    duplicates_summary = duplicates_summary.reset_index(drop=True)
-
-    return duplicates_summary
-
-
-def find_duplicate_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return all rows that belong to duplicate groups.
-
-    - Same logic as find_duplicate_summary regarding filters and keys.
-    - Finds all keys with count > 1, then returns the full rows from the filtered DataFrame.
-    """
-    base = _prepare_base_duplicates_df(df)
-
-    key_cols = [c for c in DUPLICATE_KEY_COLUMNS if c in base.columns]
-    if not key_cols:
-        return pd.DataFrame()
-
-    # First, compute summary counts
-    grouped = (
-        base
-        .groupby(key_cols, dropna=False)
-        .size()
-        .reset_index(name="count")
+    # קצת סדר: למיין לפי dup_group_id ואז dup_count (ירידה)
+    dup_rows = dup_rows.sort_values(
+        by=["dup_group_id", "dup_count"],
+        ascending=[True, False],
     )
-    dup_keys = grouped.loc[grouped["count"] > 1, key_cols]
 
-    if dup_keys.empty:
-        # No duplicates according to our definition
-        return pd.DataFrame(columns=base.columns)
+    duplicate_groups = int(dup_groups["dup_group_id"].nunique())
+    duplicate_rows = int(len(dup_rows))
 
-    # Join back to get all rows that match duplicate key combinations
-    merged = base.merge(dup_keys, on=key_cols, how="inner")
+    # --- Step 7: Export CSV with all duplicate rows ---
+    base_name = os.path.splitext(os.path.basename(scan_path))[0]
+    today_str = date.today().strftime("%Y%m%d")
+    output_filename = f"duplicates_{base_name}_{today_str}.csv"
+    output_path = os.path.join(output_dir, output_filename)
 
-    # Optional: order by the same key columns + maybe declared_profit or sale_day
-    sort_cols: List[str] = [c for c in key_cols if c in merged.columns]
-    if sort_cols:
-        merged = merged.sort_values(by=sort_cols)
+    dup_rows.to_csv(output_path, index=False, encoding="utf-8-sig")
 
-    merged = merged.reset_index(drop=True)
-    return merged
+    # --- Build results dict ---
+    results: Dict[str, Any] = {
+        "rows_before": rows_before,
+        "rows_after_filter": rows_after_filter,
+        "latest_scan_date": latest_scan_date.isoformat(),
+        "duplicate_groups": duplicate_groups,
+        "duplicate_rows": duplicate_rows,
+        "key_columns": DUP_KEY_COLUMNS,
+        "output_filename": output_filename,
+        "output_path": output_path,
+    }
+
+    # sample rows לתצוגה
+    sample_df = dup_rows.head(sample_limit)
+    sample_rows: List[Dict[str, Any]] = sample_df.to_dict(orient="records")
+
+    return results, sample_rows

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <h1 class="mb-3">RealEstate App</h1>
+        <p class="lead">
+            A small web tool for automating data-quality checks on real-estate transactions.
+        </p>
+        <hr>
+
+        <div class="list-group">
+            <a href="{{ url_for('prepare_yzer_view') }}" class="list-group-item list-group-item-action">
+                1. Prepare file for YZER
+            </a>
+
+            <a href="{{ url_for('duplicates_view') }}" class="list-group-item list-group-item-action">
+                2. Duplicates check (coming soon)
+            </a>
+
+            <a href="{{ url_for('tax_gap_view') }}" class="list-group-item list-group-item-action">
+                3. Tax gap check (prototype)
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}
