@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <div class="page-kicker">Tool 2</div>
+    <h1 class="page-title">Duplicates Detection</h1>
+    <p class="page-subtitle">
+        Locate duplicate transactions in your latest scan file. The tool uses the latest
+        <code>scan_date</code> in the file, keeps only full-sold deals (<code>sold_part = 1</code>),
+        and finds duplicate groups based on the key fields
+        (<code>block_lot, sale_day, declared_profit, sold_part, city, build_year, building_mr, rooms_number</code>).
+    </p>
+</div>
+
+<div class="layout-grid-2">
+    <!-- LEFT: Upload / tool settings -->
+    <section class="card">
+        <header class="card-header">
+            <span class="card-tag">Tool 2</span>
+            <h2 class="card-title">Duplicates Check</h2>
+            <p class="card-subtitle">
+                Upload a scan file and run the duplicates check. The tool will automatically pick
+                the latest <code>scan_date</code>, filter to <code>sold_part = 1</code>, and surface
+                all rows that belong to duplicate groups.
+            </p>
+        </header>
+
+        <div class="card-body">
+            <form method="post" enctype="multipart/form-data" class="form-vertical">
+                <div class="dropzone-wrapper">
+                    <input type="file"
+                           id="scan_file"
+                           name="scan_file"
+                           accept=".csv,.xls,.xlsx,.xlsm"
+                           class="file-input">
+                    <label for="scan_file" class="dropzone">
+                        <div class="dropzone-icon">☁️</div>
+                        <div class="dropzone-title">Drop your scan file here</div>
+                        <div class="dropzone-subtitle">
+                            or click to choose from your computer
+                        </div>
+                        <div class="dropzone-filename" id="scan_file_name">
+                            No file selected
+                        </div>
+                    </label>
+                </div>
+
+                <p class="helper-text">
+                    Allowed formats: <strong>.csv, .xls, .xlsx, .xlsm</strong>
+                </p>
+
+                <div class="form-actions">
+                    <button type="submit" class="primary-btn">
+                        Run Duplicates Check
+                    </button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <!-- RIGHT: Results -->
+    <section class="card">
+        <header class="card-header">
+            <span class="card-tag">Results</span>
+            <h2 class="card-title">Results</h2>
+
+            {% if results %}
+                <p class="card-subtitle">
+                    Last scan date:
+                    <strong>{{ results.latest_scan_date or "unknown" }}</strong>
+                    |
+                    Duplicate groups (&gt; 1 row):
+                    <strong>{{ results.duplicate_groups or 0 }}</strong>
+                    |
+                    Duplicate rows:
+                    <strong>{{ results.duplicate_rows or 0 }}</strong>
+                    |
+                    Total rows in file:
+                    <strong>{{ results.total_rows or 0 }}</strong>
+                </p>
+            {% else %}
+                <p class="card-subtitle">
+                    Upload a scan file and run the Duplicates Check to see a summary and preview
+                    of duplicate rows.
+                </p>
+            {% endif %}
+        </header>
+
+        <div class="card-body">
+            {% if results %}
+                <div class="result-summary">
+                    <div class="result-row">
+                        <span class="result-label">Last scan date:</span>
+                        <span class="result-value">
+                            {{ results.latest_scan_date or "unknown" }}
+                        </span>
+                    </div>
+                    <div class="result-row">
+                        <span class="result-label">Duplicate groups (&gt; 1 row):</span>
+                        <span class="result-value">
+                            {{ results.duplicate_groups or 0 }}
+                        </span>
+                    </div>
+                    <div class="result-row">
+                        <span class="result-label">Duplicate rows:</span>
+                        <span class="result-value">
+                            {{ results.duplicate_rows or 0 }}
+                        </span>
+                    </div>
+                    <div class="result-row">
+                        <span class="result-label">Total rows in file:</span>
+                        <span class="result-value">
+                            {{ results.total_rows or 0 }}
+                        </span>
+                    </div>
+
+                    {% if download_filename %}
+                    <div class="result-row">
+                        <span class="result-label">Download:</span>
+                        <a href="{{ url_for('download_file', filename=download_filename) }}"
+                           class="primary-btn small">
+                            Download duplicates CSV
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+
+                {% if preview_rows %}
+                    <h3 class="table-title">
+                        Preview of duplicate rows (first {{ preview_rows|length }} rows)
+                    </h3>
+
+                    <!-- IMPORTANT: fixed-height scroll area inside the card -->
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead>
+                            <tr>
+                                {% for col in preview_rows[0].keys() %}
+                                    <th>{{ col }}</th>
+                                {% endfor %}
+                            </tr>
+                            </thead>
+                            <tbody>
+                            {% for row in preview_rows %}
+                                <tr>
+                                    {% for value in row.values() %}
+                                        <td>{{ value }}</td>
+                                    {% endfor %}
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% endif %}
+            {% else %}
+                <p class="placeholder-text">
+                    No analysis has been run yet. Once you upload a scan file and click
+                    <strong>Run Duplicates Check</strong>, a summary and a scrollable preview of
+                    duplicate rows will appear here.
+                </p>
+            {% endif %}
+        </div>
+    </section>
+</div>
+
+<script>
+    // Simple filename preview for the Duplicates upload
+    document.addEventListener("DOMContentLoaded", function () {
+        const input = document.getElementById("scan_file");
+        const label = document.getElementById("scan_file_name");
+        if (input && label) {
+            input.addEventListener("change", function () {
+                label.textContent = input.files.length
+                    ? input.files[0].name
+                    : "No file selected";
+            });
+        }
+    });
+</script>
+{% endblock %}

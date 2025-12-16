@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <div class="page-kicker">Tool 3</div>
+    <h1 class="page-title">Tax Authority Comparison</h1>
+    <p class="page-subtitle">
+        Find missing transactions by cross-referencing RAMI data against your internal
+        scan file. This tool finds transactions that exist in RAMI but are missing
+        from your system. You can upload a single RAMI file or a ZIP with several files.
+    </p>
+</div>
+
+<div class="layout-grid-2">
+    <!-- Uploads card -->
+    <section class="card">
+        <header class="card-header">
+            <span class="card-tag">Tool 3</span>
+            <h2 class="card-title">Tax Gap Check</h2>
+            <p class="card-subtitle">
+                Compare official Tax Authority (RAMI) data against your internal scan file.
+                Upload your latest scan file and either a single RAMI file or a ZIP that
+                contains several RAMI files, then run the gap analysis.
+            </p>
+        </header>
+
+        <div class="card-body gap-upload-body">
+            <form method="post" enctype="multipart/form-data" class="form-vertical">
+
+                <!-- Scan file -->
+                <div class="dropzone-wrapper">
+                    <div class="dropzone-label">1. Upload Internal Scan File</div>
+                    <input type="file"
+                           id="scan_file"
+                           name="scan_file"
+                           accept=".csv,.xls,.xlsx,.xlsm"
+                           class="file-input">
+                    <label for="scan_file" class="dropzone">
+                        <div class="dropzone-icon">☁️</div>
+                        <div class="dropzone-title">Upload Internal Scan File</div>
+                        <div class="dropzone-subtitle">
+                            Drag &amp; drop or click to upload
+                        </div>
+                        <div class="dropzone-filename" id="scan_file_name">
+                            No file selected
+                        </div>
+                    </label>
+                </div>
+
+                <!-- RAMI file or ZIP -->
+                <div class="dropzone-wrapper">
+                    <div class="dropzone-label">2. Upload RAMI File or ZIP</div>
+                    <input type="file"
+                           id="rami_file"
+                           name="rami_file"
+                           accept=".xls,.xlsx,.xlsm,.zip"
+                           class="file-input">
+                    <label for="rami_file" class="dropzone">
+                        <div class="dropzone-icon">☁️</div>
+                        <div class="dropzone-title">Upload RAMI Excel or ZIP</div>
+                        <div class="dropzone-subtitle">
+                            Drag &amp; drop or click to upload
+                        </div>
+                        <div class="dropzone-filename" id="rami_file_name">
+                            No file selected
+                        </div>
+                    </label>
+                </div>
+
+                <p class="helper-text">
+                    Allowed formats:
+                    <strong>Scan – .csv, .xls, .xlsx, .xlsm</strong> |
+                    <strong>RAMI – .xls, .xlsx, .xlsm or .zip (with multiple RAMI files)</strong>
+                </p>
+
+                <div class="form-actions">
+                    <button type="submit" class="primary-btn">
+                        Run Gap Analysis
+                    </button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <!-- Results card -->
+    <section class="card">
+        <header class="card-header">
+            <span class="card-tag">Results</span>
+            <h2 class="card-title">Analysis Results</h2>
+            {% if results %}
+                <p class="card-subtitle">
+                    Processed
+                    <strong>{{ results.file_count_total or 0 }}</strong>
+                    RAMI file(s):
+                    <strong>{{ results.file_count_success or 0 }}</strong> successful,
+                    <strong>{{ results.file_count_error or 0 }}</strong> with errors.
+                </p>
+            {% else %}
+                <p class="card-subtitle">
+                    Upload both files and click <strong>Run Gap Analysis</strong> to see missing transactions.
+                </p>
+            {% endif %}
+        </header>
+
+        <div class="card-body">
+            {% if results %}
+            <!-- Global summary -->
+            <div class="result-summary">
+                <div class="result-row">
+                    <span class="result-label">Internal scan rows (total)</span>
+                    <span class="result-value">{{ results.scan_rows_total }}</span>
+                </div>
+                <div class="result-row">
+                    <span class="result-label">RAMI deals (all files)</span>
+                    <span class="result-value">{{ results.rami_rows_total_all }}</span>
+                </div>
+                <div class="result-row">
+                    <span class="result-label">Missing deals (RAMI not in scan)</span>
+                    <span class="result-value">{{ results.missing_total }}</span>
+                </div>
+                <div class="result-row emphasised">
+                    <span class="result-label">Missing as % of all RAMI deals</span>
+                    <span class="result-value">{{ results.global_missing_pct }}%</span>
+                </div>
+            </div>
+
+            {% if results.files %}
+            <h3 class="table-title">Per-file breakdown</h3>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                    <tr>
+                        <th>File</th>
+                        <th>Status</th>
+                        <th>RAMI deals (filtered)</th>
+                        <th>Missing deals</th>
+                        <th>% missing in file</th>
+                        <th>% missing of all RAMI deals</th>
+                        <th>Filter</th>
+                        <th>Date range</th>
+                        <th>Error</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for f in results.files %}
+                    <tr>
+                        <td>{{ f.rami_filename }}</td>
+                        <td>{{ f.status }}</td>
+                        <td>{{ f.rami_rows_filtered or f.rami_rows_total }}</td>
+                        <td>{{ f.missing_count }}</td>
+                        <td>{{ f.missing_pct_of_file }}%</td>
+                        <td>{{ f.missing_pct_of_global_deals }}%</td>
+                        <td>
+                            {% if f.filter_type and f.filter_value %}
+                                {{ f.filter_type }} = {{ f.filter_value }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if f.date_from or f.date_to %}
+                                {{ f.date_from or "?" }} &rarr; {{ f.date_to or "?" }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if f.status == "error" %}
+                                {{ f.error_message }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+
+            {% if download_filename %}
+            <div class="result-row" style="margin-top: 6px;">
+                <span class="result-label">Download:</span>
+                <a href="{{ url_for('download_file', filename=download_filename) }}"
+                   class="primary-btn small">
+                    Download Missing Deals CSV
+                </a>
+            </div>
+            {% endif %}
+
+            {% if sample_rows %}
+            <h3 class="table-title">Preview of missing deals (first {{ sample_rows|length }} rows)</h3>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                    <tr>
+                        {% for col in sample_rows[0].keys() %}
+                        <th>{{ col }}</th>
+                        {% endfor %}
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for row in sample_rows %}
+                    <tr>
+                        {% for value in row.values() %}
+                        <td>{{ value }}</td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+            {% else %}
+            <p class="placeholder-text">
+                No analysis has been run yet. Upload your internal scan file and RAMI file (or ZIP) on the left
+                and click <strong>Run Gap Analysis</strong>. A global summary, per-file breakdown, and a
+                scrollable preview of missing transactions will appear here.
+            </p>
+            {% endif %}
+        </div>
+    </section>
+</div>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const scanInput = document.getElementById("scan_file");
+        const scanLabel = document.getElementById("scan_file_name");
+        const ramiInput = document.getElementById("rami_file");
+        const ramiLabel = document.getElementById("rami_file_name");
+
+        if (scanInput && scanLabel) {
+            scanInput.addEventListener("change", function () {
+                scanLabel.textContent = scanInput.files.length
+                    ? scanInput.files[0].name
+                    : "No file selected";
+            });
+        }
+        if (ramiInput && ramiLabel) {
+            ramiInput.addEventListener("change", function () {
+                ramiLabel.textContent = ramiInput.files.length
+                    ? ramiInput.files[0].name
+                    : "No file selected";
+            });
+        }
+    });
+</script>
+{% endblock %}
