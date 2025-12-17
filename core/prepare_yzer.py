@@ -358,7 +358,7 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
       Step 4: commas -> spaces in text
       Step 5: drop scan_date column
       Step 6: global NaN / placeholder cleanup
-      Step 7: integer formatting for prices (truncate decimals)
+      Step 7: integer formatting for prices (using pandas Int64)
 
     Returns a stats dict with all information required for the UI.
     """
@@ -446,7 +446,9 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
         regex=False,
     )
 
-    # --- Step 7: FIX - Ensure Integer formatting for prices (remove decimals) ---
+    # --- Step 7: FIX - Ensure Integer formatting using Int64 ---
+    # We round the values and cast to Int64 (Nullable Integer).
+    # This removes .0 and allows NaNs, without converting to string.
     price_cols = [
         "declared_profit", "sale_profit", "full_price",
         "declared_value", "declared_value_dollar",
@@ -455,9 +457,8 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
     ]
     for col in price_cols:
         if col in df.columns:
-            # Convert to string and split by dot, taking the first part
-            # This turns "2230000.0" -> "2230000" and "333.33" -> "333"
-            df[col] = df[col].astype(str).str.split('.').str[0]
+            # Round to nearest whole number, then cast to nullable Int64
+            df[col] = pd.to_numeric(df[col], errors="coerce").round().astype("Int64")
 
     # Rows/cols after all operations
     rows_after = int(len(df))
