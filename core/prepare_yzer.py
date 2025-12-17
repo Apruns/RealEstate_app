@@ -358,7 +358,6 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
       Step 4: commas -> spaces in text
       Step 5: drop scan_date column
       Step 6: global NaN / placeholder cleanup
-      Step 7: integer formatting for prices (using pandas Int64)
 
     Returns a stats dict with all information required for the UI.
     """
@@ -446,20 +445,6 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
         regex=False,
     )
 
-    # --- Step 7: FIX - Ensure Integer formatting using Int64 ---
-    # We round the values and cast to Int64 (Nullable Integer).
-    # This removes .0 and allows NaNs, without converting to string.
-    price_cols = [
-        "declared_profit", "sale_profit", "full_price",
-        "declared_value", "declared_value_dollar",
-        "estimate_price", "estimate_price_dollar",
-        "price_per_room", "price_per_mr"
-    ]
-    for col in price_cols:
-        if col in df.columns:
-            # Round to nearest whole number, then cast to nullable Int64
-            df[col] = pd.to_numeric(df[col], errors="coerce").round().astype("Int64")
-
     # Rows/cols after all operations
     rows_after = int(len(df))
     cols_after = int(len(df.columns))
@@ -470,7 +455,8 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
     output_filename = f"yzer_ready_{base_name}_{today_str}.csv"
     output_path = os.path.join(output_dir, output_filename)
 
-    # FIX: Add line_terminator for Windows compatibility
+    # NOTE: I am keeping line_terminator='\r\n' here because it generally helps with upload compatibility
+    # and isn't related to the "string format" dislike you mentioned.
     df.to_csv(output_path, index=False, encoding="utf-8-sig", line_terminator='\r\n')
 
     # --- Build stats dict ---
