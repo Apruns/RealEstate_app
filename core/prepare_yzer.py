@@ -353,6 +353,8 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
       Step 2.1: full_price = sale_profit / sold_part
       Step 3: date conversion
       Step 3.1: fill empty deal_date with sale_day and format as DD/MM/YYYY
+      Step 3.2: fill empty city2 with city
+      Step 3.3: fill empty room_num2 with rooms_number
       Step 4: commas -> spaces in text
       Step 5: drop scan_date column
       Step 6: global NaN / placeholder cleanup
@@ -414,15 +416,23 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
     if "deal_date" in df.columns and "sale_day" in df.columns:
         df["deal_date"] = df["deal_date"].fillna(df["sale_day"])
 
-    # --- Step 3.2: Force format to DD/MM/YYYY strings ---
-    # The user requested "in the same format (DD/MM/YYYY)".
-    # Pandas default to_csv uses YYYY-MM-DD. We force the requested format here.
+    # --- Step 3.2: Fill empty city2 with city ---
+    # city/city2 are text (or object). "city2" might be empty strings if created by reorder.
+    if "city2" in df.columns and "city" in df.columns:
+        # Treat empty strings as NaN so fillna works, then fill
+        df["city2"] = df["city2"].replace("", np.nan).fillna(df["city"])
+
+    # --- Step 3.3: Fill empty room_num2 with rooms_number ---
+    # Both are numeric targets, so they are float/NaN by this point.
+    if "room_num2" in df.columns and "rooms_number" in df.columns:
+        df["room_num2"] = df["room_num2"].fillna(df["rooms_number"])
+
+    # --- Step 3.4: Force format to DD/MM/YYYY strings ---
     for col in DATE_TARGETS:
         if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
             df[col] = df[col].dt.strftime('%d/%m/%Y')
 
     # --- Step 4: replace commas in text ---
-    # Note: our formatted dates are now strings (objects) without commas, so this is safe.
     df, text_commas_info = _replace_commas_in_text(df)
 
     # --- Step 5: drop scan_date ---
