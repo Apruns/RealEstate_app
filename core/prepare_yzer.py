@@ -358,6 +358,7 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
       Step 4: commas -> spaces in text
       Step 5: drop scan_date column
       Step 6: global NaN / placeholder cleanup
+      Step 7: integer formatting for prices (remove .0)
 
     Returns a stats dict with all information required for the UI.
     """
@@ -417,13 +418,11 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
         df["deal_date"] = df["deal_date"].fillna(df["sale_day"])
 
     # --- Step 3.2: Fill empty city2 with city ---
-    # city/city2 are text (or object). "city2" might be empty strings if created by reorder.
     if "city2" in df.columns and "city" in df.columns:
         # Treat empty strings as NaN so fillna works, then fill
         df["city2"] = df["city2"].replace("", np.nan).fillna(df["city"])
 
     # --- Step 3.3: Fill empty room_num2 with rooms_number ---
-    # Both are numeric targets, so they are float/NaN by this point.
     if "room_num2" in df.columns and "rooms_number" in df.columns:
         df["room_num2"] = df["room_num2"].fillna(df["rooms_number"])
 
@@ -445,6 +444,20 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
         regex=False,
     )
 
+    # --- Step 7: Format price columns as Integers (remove .0) ---
+    # We apply this to columns that should be strict integers (prices).
+    # Note: Step 6 already converted NaNs to empty strings.
+    price_cols = [
+        "declared_profit", "sale_profit", "full_price",
+        "declared_value", "declared_value_dollar",
+        "estimate_price", "estimate_price_dollar",
+        "price_per_room", "price_per_mr"
+    ]
+    for col in price_cols:
+        if col in df.columns:
+            # Remove trailing .0 from string representation (e.g. "123.0" -> "123")
+            df[col] = df[col].astype(str).str.replace(r"\.0$", "", regex=True)
+
     # Rows/cols after all operations
     rows_after = int(len(df))
     cols_after = int(len(df.columns))
@@ -455,7 +468,8 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
     output_filename = f"yzer_ready_{base_name}_{today_str}.csv"
     output_path = os.path.join(output_dir, output_filename)
 
-    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    # Added line_terminator for Windows compatibility
+    df.to_csv(output_path, index=False, encoding="utf-8-sig", line_terminator='\r\n')
 
     # --- Build stats dict ---
     stats: Dict[str, Any] = {
