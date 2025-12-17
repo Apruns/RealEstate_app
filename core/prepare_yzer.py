@@ -352,6 +352,7 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
       Step 2: numeric conversion
       Step 2.1: full_price = sale_profit / sold_part
       Step 3: date conversion
+      Step 3.1: fill empty deal_date with sale_day and format as DD/MM/YYYY
       Step 4: commas -> spaces in text
       Step 5: drop scan_date column
       Step 6: global NaN / placeholder cleanup
@@ -406,10 +407,22 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
             "invalid": invalid_fp,
         }
 
-    # --- Step 3: date conversion ---
+    # --- Step 3: date conversion (to datetime objects) ---
     df, date_info = _convert_date_columns(df)
 
+    # --- Step 3.1: Fill empty deal_date with sale_day ---
+    if "deal_date" in df.columns and "sale_day" in df.columns:
+        df["deal_date"] = df["deal_date"].fillna(df["sale_day"])
+
+    # --- Step 3.2: Force format to DD/MM/YYYY strings ---
+    # The user requested "in the same format (DD/MM/YYYY)".
+    # Pandas default to_csv uses YYYY-MM-DD. We force the requested format here.
+    for col in DATE_TARGETS:
+        if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.strftime('%d/%m/%Y')
+
     # --- Step 4: replace commas in text ---
+    # Note: our formatted dates are now strings (objects) without commas, so this is safe.
     df, text_commas_info = _replace_commas_in_text(df)
 
     # --- Step 5: drop scan_date ---
