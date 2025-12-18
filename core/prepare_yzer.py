@@ -457,7 +457,7 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
 
     # NOTE: I am keeping line_terminator='\r\n' here because it generally helps with upload compatibility
     # and isn't related to the "string format" dislike you mentioned.
-    df.to_csv(output_path, index=False, encoding="utf-8-sig", line_terminator='\r\n')
+    df.to_csv(output_path, index=False, encoding="utf-8-sig", lineterminator='\r\n')
 
     # --- Build stats dict ---
     stats: Dict[str, Any] = {
