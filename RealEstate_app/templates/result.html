@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block page_title %}{{ tool_name }} · RealEstate App{% endblock %}
+
+{% block main_title %}{{ tool_name }}{% endblock %}
+{% block main_subtitle %}
+{{ tool_description }}
+{% endblock %}
+
+{% block content %}
+<div class="tool-card">
+    <div class="tool-card-header">
+        <span class="tool-pill">{{ tool_label }}</span>
+        <div>
+            <h2 class="tool-title">{{ tool_name }}</h2>
+            <p class="tool-description">
+                {{ tool_description }}
+            </p>
+        </div>
+    </div>
+
+    <div class="tool-card-body">
+        <div class="result-layout">
+            <!-- Summary -->
+            <div class="result-column">
+                <div class="summary-panel">
+                    <h3 class="results-title">Analysis Summary</h3>
+
+                    {% if summary %}
+                        {% if summary is string %}
+                            <p>{{ summary }}</p>
+                        {% else %}
+                            <dl class="summary-list">
+                                {% for key, value in summary.items() %}
+                                    <div class="summary-row">
+                                        <dt>{{ key|replace('_', ' ')|title }}</dt>
+                                        <dd>{{ value }}</dd>
+                                    </div>
+                                {% endfor %}
+                            </dl>
+                        {% endif %}
+                    {% else %}
+                        <p class="results-subtitle">No summary information was returned from the tool.</p>
+                    {% endif %}
+
+                    <a href="{{ url_for('download_file', filename=download_filename) }}"
+                       class="primary-btn download-btn">
+                        Download Result CSV
+                    </a>
+
+                    <a href="{{ request.referrer or url_for('prepare_yzer_view') }}"
+                       class="secondary-link">
+                        ← Back to previous tool
+                    </a>
+                </div>
+            </div>
+
+            <!-- Preview -->
+            <div class="result-column">
+                <div class="results-panel">
+                    <h3 class="results-title">Data Preview</h3>
+                    <div class="results-table-wrapper">
+                        {{ preview_table_html|safe }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
