@@ -1,6 +1,7 @@
-# C:\Ariel Portnik\RealEstate_app\app.py
+# app.py
 
 import os
+import shutil
 from datetime import datetime
 
 from flask import (
@@ -15,9 +16,12 @@ from flask import (
 from werkzeug.utils import secure_filename
 import pandas as pd
 
-from core.prepare_yzer import run_yzer_preparation
+# --- Import Core Modules ---
+# Ensure you have created core/file_splitter.py as discussed!
+from core import file_splitter 
+from core import prepare_yzer
+from core import duplicates_checker
 from core.tax_gap_checker import run_tax_gap_check
-from core.duplicates_checker import run_duplicates_check
 
 # ------------------------------------------------------------------
 # Paths & config
@@ -28,7 +32,7 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "outputs")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx", ".xlsm"}
+ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx", ".xlsm", ".zip"}
 
 app = Flask(__name__, static_folder="static_css", static_url_path="/static")
 
@@ -47,7 +51,7 @@ app.config["OUTPUT_FOLDER"] = OUTPUT_FOLDER
 # ------------------------------------------------------------------
 
 def _allowed_file(filename: str) -> bool:
-    """Check if file extension is allowed (generic CSV/Excel)."""
+    """Check if file extension is allowed."""
     _, ext = os.path.splitext(filename)
     return ext.lower() in ALLOWED_EXTENSIONS
 
@@ -68,7 +72,7 @@ def home():
 
 
 # ------------------------------------------------------------------
-# Routes: YZER Prep
+# Routes: YZER Prep (Optimized with Splitter)
 # ------------------------------------------------------------------
 
 @app.route("/prepare-yzer", methods=["GET", "POST"])
@@ -90,20 +94,34 @@ def prepare_yzer_view():
         filename = secure_filename(file.filename)
         input_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(input_path)
+        
+        # Temp folder for chunks
+        temp_chunk_dir = os.path.join(app.config["UPLOAD_FOLDER"], "temp_yzer_chunks")
 
         try:
-            stats = run_yzer_preparation(
-                input_path,
+            # 1. SPLIT INPUT FILE
+            chunk_paths, metadata = file_splitter.split_file_to_chunks(input_path, temp_chunk_dir)
+
+            # 2. PROCESS CHUNKS
+            stats = prepare_yzer.run_yzer_on_chunks(
+                chunk_paths,
                 app.config["OUTPUT_FOLDER"],
+                metadata.get("original_filename", filename)
             )
 
             result = stats
             download_filename = stats.get("output_filename")
 
             flash("Cleaning completed successfully.", "success")
+        
         except Exception as e:
             app.logger.exception("Error during YZER preparation: %s", e)
             flash(f"Error during YZER preparation: {e}", "error")
+            
+        finally:
+            # 3. CLEANUP TEMP CHUNKS
+            if os.path.exists(temp_chunk_dir):
+                shutil.rmtree(temp_chunk_dir)
 
     return render_template(
         "prepare_yzer.html",
@@ -114,19 +132,11 @@ def prepare_yzer_view():
 
 
 # ------------------------------------------------------------------
-# Routes: Duplicates Detection
+# Routes: Duplicates Detection (Optimized with Splitter)
 # ------------------------------------------------------------------
 
 @app.route("/duplicates-check", methods=["GET", "POST"])
 def duplicates_view():
-    """
-    Upload a scan file and run duplicates detection.
-    Expects core.duplicates_checker.run_duplicates_check to return:
-      results, sample_rows
-    where:
-      - results is a dict with at least 'output_filename'
-      - sample_rows is a list of dicts / rows for preview
-    """
     results = None
     sample_rows = None
     download_filename = None
@@ -146,18 +156,32 @@ def duplicates_view():
         input_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(input_path)
 
+        # Temp folder for chunks
+        temp_chunk_dir = os.path.join(app.config["UPLOAD_FOLDER"], "temp_dup_chunks")
+
         try:
-            # Adjust according to your actual signature if different
-            results, sample_rows = run_duplicates_check(
-                input_path,
+            # 1. SPLIT INPUT FILE
+            # This also extracts max_scan_date efficiently
+            chunk_paths, metadata = file_splitter.split_file_to_chunks(input_path, temp_chunk_dir)
+            
+            # 2. PROCESS CHUNKS
+            results, sample_rows = duplicates_checker.run_duplicates_on_chunks(
+                chunk_paths,
                 app.config["OUTPUT_FOLDER"],
+                metadata
             )
 
             download_filename = results.get("output_filename")
             flash("Duplicates check completed successfully.", "success")
+        
         except Exception as e:
             app.logger.exception("Error during duplicates check: %s", e)
             flash(f"Error during duplicates check: {e}", "error")
+            
+        finally:
+            # 3. CLEANUP TEMP CHUNKS
+            if os.path.exists(temp_chunk_dir):
+                shutil.rmtree(temp_chunk_dir)
 
     return render_template(
         "duplicates.html",
@@ -169,7 +193,7 @@ def duplicates_view():
 
 
 # ------------------------------------------------------------------
-# Routes: Tax Gap Check (now supports ZIP with multiple RAMI files)
+# Routes: Tax Gap Check (Existing Logic)
 # ------------------------------------------------------------------
 
 @app.route("/tax-gap-check", methods=["GET", "POST"])
@@ -190,23 +214,7 @@ def tax_gap_view():
             flash("Please upload the RAMI file (or ZIP).", "error")
             return redirect(url_for("tax_gap_view"))
 
-        scan_ext = os.path.splitext(scan_file.filename)[1].lower()
-        rami_ext = os.path.splitext(rami_file.filename)[1].lower()
-
-        # Scan file must still be a regular CSV/Excel
-        if scan_ext not in {".csv", ".xls", ".xlsx", ".xlsm"}:
-            flash("Unsupported scan file type. Please upload CSV / Excel.", "error")
-            return redirect(url_for("tax_gap_view"))
-
-        # RAMI file can be a single Excel/HTML .xls/.xlsx/.xlsm or a ZIP with multiple files
-        if rami_ext not in {".xls", ".xlsx", ".xlsm", ".zip"}:
-            flash(
-                "Unsupported RAMI file type. Please upload Excel (.xls/.xlsx/.xlsm) "
-                "or a .zip containing multiple RAMI files.",
-                "error",
-            )
-            return redirect(url_for("tax_gap_view"))
-
+        # Save files
         scan_name = secure_filename(scan_file.filename)
         rami_name = secure_filename(rami_file.filename)
 
@@ -217,6 +225,8 @@ def tax_gap_view():
         rami_file.save(rami_path)
 
         try:
+            # Note: Tax Gap logic is not yet refactored to use file_splitter chunks.
+            # It still processes the scan file directly.
             results, sample_rows = run_tax_gap_check(
                 scan_path,
                 rami_path,
