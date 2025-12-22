@@ -1,13 +1,18 @@
 # core/prepare_yzer.py
 
 import os
+import csv
 from datetime import date
 from typing import Dict, Any, List, Tuple
 import pandas as pd
 import numpy as np
+try:
+    from openpyxl import load_workbook
+except ImportError:
+    load_workbook = None
 
 # ---------------------------------------------------------
-# Configuration
+# Config
 # ---------------------------------------------------------
 PREFERRED_COLUMN_ORDER: List[str] = [
     "id", "code", "start_block", "end_block", "start_lot", "end_lot", "page", "line",
@@ -24,7 +29,6 @@ PREFERRED_COLUMN_ORDER: List[str] = [
     "building_rights", "elevator_num", "field_area_mr", "scan_date",
 ]
 
-# FIX 1: Added "sold_part" to ensure it converts to a number
 NUMERIC_TARGETS = {
     "declared_profit", "sale_profit", "full_price", "declared_value",
     "declared_value_dollar", "estimate_price", "estimate_price_dollar",
@@ -35,14 +39,42 @@ DATE_TARGETS = {"deal_date", "sale_day"}
 CHUNK_SIZE = 50000
 
 # ---------------------------------------------------------
-# Processing Logic (Applied per chunk)
+# Helper: Efficient Excel to CSV conversion
+# ---------------------------------------------------------
+def _convert_excel_to_csv_temp(excel_path: str) -> str:
+    """
+    Converts .xlsx to a temporary .csv file row-by-row using openpyxl read-only mode.
+    This avoids loading the huge dataframe into memory.
+    Returns the path to the temporary CSV.
+    """
+    if load_workbook is None:
+        raise ImportError("openpyxl is required for Excel files. Install it with: pip install openpyxl")
+
+    base, _ = os.path.splitext(excel_path)
+    temp_csv_path = f"{base}_temp_conversion.csv"
+
+    # Use read_only=True for memory efficiency
+    wb = load_workbook(filename=excel_path, read_only=True, data_only=True)
+    ws = wb.active
+
+    with open(temp_csv_path, 'w', newline='', encoding='utf-8') as f:
+        c = csv.writer(f)
+        for row in ws.rows:
+            # Write row values to CSV
+            c.writerow([cell.value for cell in row])
+    
+    wb.close()
+    return temp_csv_path
+
+# ---------------------------------------------------------
+# Processing Logic (Per Chunk)
 # ---------------------------------------------------------
 
 def _process_chunk(df: pd.DataFrame) -> pd.DataFrame:
     """Apply all cleaning rules to a single chunk."""
     
     # 1. Reorder / Add missing columns
-    ci_map = {c.lower(): c for c in df.columns}
+    ci_map = {str(c).lower(): c for c in df.columns}
     new_data = {}
     
     for canonical in PREFERRED_COLUMN_ORDER:
@@ -61,28 +93,23 @@ def _process_chunk(df: pd.DataFrame) -> pd.DataFrame:
         
     df = pd.DataFrame(new_data)
     
-    # 2. Global clean: "--" -> 0
+    # 2. Global clean
     df = df.replace("--", 0)
 
-    # 3. Numeric Conversion (Optimized Regex)
+    # 3. Numeric Conversion
     for target in NUMERIC_TARGETS:
         if target in df.columns:
             clean_series = df[target].astype(str).str.replace(r"[^0-9\.\-]", "", regex=True)
             df[target] = pd.to_numeric(clean_series, errors="coerce")
 
-    # 4. Full Price Calc (FIX 2: Only calculate if full_price is empty)
+    # 4. Full Price Calc
     if "sale_profit" in df.columns and "sold_part" in df.columns and "full_price" in df.columns:
-        # We calculate ONLY where:
-        # a) full_price is NaN (empty)
-        # b) sold_part is not NaN and not 0
-        # c) sale_profit is not NaN
         valid_to_calc = (
             (df["full_price"].isna()) & 
             (df["sold_part"].notna()) & 
             (df["sold_part"] != 0) & 
             (df["sale_profit"].notna())
         )
-        
         df.loc[valid_to_calc, "full_price"] = (
             df.loc[valid_to_calc, "sale_profit"] / df.loc[valid_to_calc, "sold_part"]
         )
@@ -95,10 +122,8 @@ def _process_chunk(df: pd.DataFrame) -> pd.DataFrame:
     # 6. Fill Logic
     if "deal_date" in df.columns and "sale_day" in df.columns:
         df["deal_date"] = df["deal_date"].fillna(df["sale_day"])
-
     if "city2" in df.columns and "city" in df.columns:
         df["city2"] = df["city2"].replace("", np.nan).fillna(df["city"])
-
     if "room_num2" in df.columns and "rooms_number" in df.columns:
         df["room_num2"] = df["room_num2"].fillna(df["rooms_number"])
 
@@ -113,7 +138,7 @@ def _process_chunk(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].astype(str).str.replace(",", " ", regex=False)
 
     # 9. Drop scan_date
-    cols_lower = {c.lower(): c for c in df.columns}
+    cols_lower = {str(c).lower(): c for c in df.columns}
     if "scan_date" in cols_lower:
         df = df.drop(columns=[cols_lower["scan_date"]])
 
@@ -138,40 +163,62 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
         os.remove(output_path)
 
     ext = os.path.splitext(scan_path)[1].lower()
+    processing_path = scan_path
+    is_temp_file = False
+
+    # === OPTIMIZATION: Convert Excel to CSV stream first ===
+    if ext in [".xls", ".xlsx", ".xlsm"]:
+        try:
+            # Create a temp CSV from the Excel file to avoid loading full DF
+            processing_path = _convert_excel_to_csv_temp(scan_path)
+            is_temp_file = True
+        except Exception as e:
+            # Fallback (risky for large files, but safe for small ones)
+            print(f"Warning: Could not stream Excel. Falling back to pandas read. Error: {e}")
+            processing_path = scan_path
+
+    # Detect encoding (only relevant if it's a CSV now)
     encoding = "utf-8"
+    read_mode_ext = os.path.splitext(processing_path)[1].lower()
     
-    if ext == ".csv":
+    if read_mode_ext == ".csv":
         for enc in ["utf-8", "cp1255", "latin1"]:
             try:
-                pd.read_csv(scan_path, nrows=50, encoding=enc)
+                pd.read_csv(processing_path, nrows=50, encoding=enc)
                 encoding = enc
                 break
             except:
                 pass
-        iterator = pd.read_csv(scan_path, chunksize=CHUNK_SIZE, encoding=encoding, dtype=str)
+        iterator = pd.read_csv(processing_path, chunksize=CHUNK_SIZE, encoding=encoding, dtype=str)
     else:
-        full_df = pd.read_excel(scan_path, dtype=str)
+        # If fallback happened and it's still Excel (rare)
+        full_df = pd.read_excel(processing_path, dtype=str)
         iterator = [full_df[i:i+CHUNK_SIZE] for i in range(0, len(full_df), CHUNK_SIZE)]
 
     total_rows = 0
     is_first_chunk = True
 
-    for chunk in iterator:
-        if chunk.empty: continue
-        
-        processed_chunk = _process_chunk(chunk)
-        
-        processed_chunk.to_csv(
-            output_path, 
-            mode='a', 
-            index=False, 
-            header=is_first_chunk, 
-            encoding="utf-8-sig", 
-            lineterminator='\r\n'
-        )
-        
-        total_rows += len(processed_chunk)
-        is_first_chunk = False
+    try:
+        for chunk in iterator:
+            if chunk.empty: continue
+            
+            processed_chunk = _process_chunk(chunk)
+            
+            processed_chunk.to_csv(
+                output_path, 
+                mode='a', 
+                index=False, 
+                header=is_first_chunk, 
+                encoding="utf-8-sig", 
+                lineterminator='\r\n'
+            )
+            
+            total_rows += len(processed_chunk)
+            is_first_chunk = False
+    finally:
+        # Cleanup temp file
+        if is_temp_file and os.path.exists(processing_path):
+            os.remove(processing_path)
 
     return {
         "output_filename": output_filename,
