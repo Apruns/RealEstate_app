@@ -10,4 +10,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["sh", "-c", "gunicorn -b :$PORT app:app"]
+CMD ["sh", "-c", "gunicorn -b :$PORT app:app --timeout 120"]
