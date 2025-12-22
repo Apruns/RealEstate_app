@@ -1,11 +1,11 @@
 # core/prepare_yzer.py
 
 import os
-import csv
 from datetime import date
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Generator
 import pandas as pd
 import numpy as np
+
 try:
     from openpyxl import load_workbook
 except ImportError:
@@ -39,32 +39,47 @@ DATE_TARGETS = {"deal_date", "sale_day"}
 CHUNK_SIZE = 50000
 
 # ---------------------------------------------------------
-# Helper: Efficient Excel to CSV conversion
+# Helper: Direct Excel Chunk Iterator
 # ---------------------------------------------------------
-def _convert_excel_to_csv_temp(excel_path: str) -> str:
+def _excel_chunk_iterator(excel_path: str, chunk_size: int) -> Generator[pd.DataFrame, None, None]:
     """
-    Converts .xlsx to a temporary .csv file row-by-row using openpyxl read-only mode.
-    This avoids loading the huge dataframe into memory.
-    Returns the path to the temporary CSV.
+    Yields chunks of the Excel file as DataFrames directly from the stream.
+    No intermediate CSV file is created.
     """
     if load_workbook is None:
-        raise ImportError("openpyxl is required for Excel files. Install it with: pip install openpyxl")
+        raise ImportError("openpyxl is required. pip install openpyxl")
 
-    base, _ = os.path.splitext(excel_path)
-    temp_csv_path = f"{base}_temp_conversion.csv"
-
-    # Use read_only=True for memory efficiency
+    # read_only=True is critical for low memory usage
     wb = load_workbook(filename=excel_path, read_only=True, data_only=True)
     ws = wb.active
-
-    with open(temp_csv_path, 'w', newline='', encoding='utf-8') as f:
-        c = csv.writer(f)
-        for row in ws.rows:
-            # Write row values to CSV
-            c.writerow([cell.value for cell in row])
     
+    rows_iter = ws.rows
+    
+    # 1. Get Headers
+    try:
+        header_row = next(rows_iter)
+        headers = [cell.value for cell in header_row]
+    except StopIteration:
+        wb.close()
+        return
+
+    # 2. Accumulate rows and yield chunks
+    current_chunk = []
+    
+    for row in rows_iter:
+        # Get values
+        values = [cell.value for cell in row]
+        current_chunk.append(values)
+        
+        if len(current_chunk) >= chunk_size:
+            yield pd.DataFrame(current_chunk, columns=headers)
+            current_chunk = []  # Reset buffer
+            
+    # Yield remaining
+    if current_chunk:
+        yield pd.DataFrame(current_chunk, columns=headers)
+        
     wb.close()
-    return temp_csv_path
 
 # ---------------------------------------------------------
 # Processing Logic (Per Chunk)
@@ -163,62 +178,44 @@ def run_yzer_preparation(scan_path: str, output_dir: str) -> Dict[str, Any]:
         os.remove(output_path)
 
     ext = os.path.splitext(scan_path)[1].lower()
-    processing_path = scan_path
-    is_temp_file = False
-
-    # === OPTIMIZATION: Convert Excel to CSV stream first ===
-    if ext in [".xls", ".xlsx", ".xlsm"]:
-        try:
-            # Create a temp CSV from the Excel file to avoid loading full DF
-            processing_path = _convert_excel_to_csv_temp(scan_path)
-            is_temp_file = True
-        except Exception as e:
-            # Fallback (risky for large files, but safe for small ones)
-            print(f"Warning: Could not stream Excel. Falling back to pandas read. Error: {e}")
-            processing_path = scan_path
-
-    # Detect encoding (only relevant if it's a CSV now)
-    encoding = "utf-8"
-    read_mode_ext = os.path.splitext(processing_path)[1].lower()
     
-    if read_mode_ext == ".csv":
+    # --- Select Iterator Strategy ---
+    if ext in [".xls", ".xlsx", ".xlsm"]:
+        # New Direct Excel Stream
+        iterator = _excel_chunk_iterator(scan_path, CHUNK_SIZE)
+    else:
+        # CSV Stream
+        encoding = "utf-8"
         for enc in ["utf-8", "cp1255", "latin1"]:
             try:
-                pd.read_csv(processing_path, nrows=50, encoding=enc)
+                pd.read_csv(scan_path, nrows=50, encoding=enc)
                 encoding = enc
                 break
             except:
                 pass
-        iterator = pd.read_csv(processing_path, chunksize=CHUNK_SIZE, encoding=encoding, dtype=str)
-    else:
-        # If fallback happened and it's still Excel (rare)
-        full_df = pd.read_excel(processing_path, dtype=str)
-        iterator = [full_df[i:i+CHUNK_SIZE] for i in range(0, len(full_df), CHUNK_SIZE)]
+        iterator = pd.read_csv(scan_path, chunksize=CHUNK_SIZE, encoding=encoding, dtype=str)
 
     total_rows = 0
     is_first_chunk = True
 
-    try:
-        for chunk in iterator:
-            if chunk.empty: continue
-            
-            processed_chunk = _process_chunk(chunk)
-            
-            processed_chunk.to_csv(
-                output_path, 
-                mode='a', 
-                index=False, 
-                header=is_first_chunk, 
-                encoding="utf-8-sig", 
-                lineterminator='\r\n'
-            )
-            
-            total_rows += len(processed_chunk)
-            is_first_chunk = False
-    finally:
-        # Cleanup temp file
-        if is_temp_file and os.path.exists(processing_path):
-            os.remove(processing_path)
+    for chunk in iterator:
+        if chunk.empty: continue
+        
+        # 1. Process Chunk
+        processed_chunk = _process_chunk(chunk)
+        
+        # 2. Append Chunk to File
+        processed_chunk.to_csv(
+            output_path, 
+            mode='a', 
+            index=False, 
+            header=is_first_chunk, 
+            encoding="utf-8-sig", 
+            lineterminator='\r\n'
+        )
+        
+        total_rows += len(processed_chunk)
+        is_first_chunk = False
 
     return {
         "output_filename": output_filename,
