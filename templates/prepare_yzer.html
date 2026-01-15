@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <div class="page-kicker">Tool 1</div>
+    <h1 class="page-title">Prepare File for YZER</h1>
+    <p class="page-subtitle">
+        Upload an internal scan file. This tool standardizes headers, converts numeric
+        and date formats, replaces commas and dashes, removes the <code>scan_date</code>
+        column, and exports a ready-to-upload CSV for YZER.
+    </p>
+</div>
+
+<div class="layout-grid-2">
+    <!-- Tool card (left) – same positioning style as Duplicates -->
+    <section class="card">
+        <header class="card-header">
+            <span class="card-tag">Tool 1</span>
+            <h2 class="card-title">Upload Internal Scan File</h2>
+            <p class="card-subtitle">
+                Drag &amp; drop your internal scan file here, or click to browse.
+                Supported formats: <strong>.csv, .xls, .xlsx</strong>
+            </p>
+        </header>
+
+        <div class="card-body">
+            <form method="post" enctype="multipart/form-data" class="form-vertical">
+                <div class="dropzone-wrapper">
+                    <input type="file"
+                           id="scan_file"
+                           name="scan_file"
+                           accept=".csv,.xls,.xlsx"
+                           class="file-input">
+                    <label for="scan_file" class="dropzone">
+                        <div class="dropzone-icon">☁️</div>
+                        <div class="dropzone-title">Drop your scan file here</div>
+                        <div class="dropzone-subtitle">
+                            or click to choose from your computer
+                        </div>
+                        <div class="dropzone-filename" id="scan_file_name">
+                            No file selected
+                        </div>
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="primary-btn">
+                        Run YZER Preparation
+                    </button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <!-- Results card (right) – visually aligned with Duplicates "Results" box -->
+    <section class="card">
+        <header class="card-header">
+            <span class="card-tag">Results</span>
+            <h2 class="card-title">Cleaning Progress &amp; Output</h2>
+            <p class="card-subtitle">
+                After you upload a scan file and run the preparation, a summary of each step
+                and a download link for the cleaned file will appear here.
+            </p>
+        </header>
+
+        <div class="card-body">
+            {% if result %}
+            <div class="result-summary">
+                <div class="result-row">
+                    <span class="result-label">Step 1</span>
+                    <span class="result-value">Read scan file (CSV / Excel)</span>
+                </div>
+                <div class="result-row">
+                    <span class="result-label">Step 2</span>
+                    <span class="result-value">Convert numeric columns to numeric format</span>
+                </div>
+                <div class="result-row">
+                    <span class="result-label">Step 3</span>
+                    <span class="result-value">Convert date columns to short date format (DD/MM/YYYY)</span>
+                </div>
+                <div class="result-row">
+                    <span class="result-label">Step 4</span>
+                    <span class="result-value">Replace commas with spaces in text columns</span>
+                </div>
+                <div class="result-row">
+                    <span class="result-label">Step 5</span>
+                    <span class="result-value">Replace “--” with numeric 0 where needed</span>
+                </div>
+                <div class="result-row">
+                    <span class="result-label">Step 6</span>
+                    <span class="result-value">Remove <code>scan_date</code> column</span>
+                </div>
+
+                <div class="result-row emphasised">
+                    <span class="result-label">Rows in cleaned file:</span>
+                    <span class="result-value">
+                        {{ result.rows_after or result.row_count }}
+                    </span>
+                </div>
+
+                {% if download_filename %}
+                <div class="result-row">
+                    <span class="result-label">Download cleaned file:</span>
+                    <a href="{{ url_for('download_file', filename=download_filename) }}"
+                       class="primary-btn small">
+                        Download cleaned CSV
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+            {% else %}
+            <p class="placeholder-text">
+                The results of the preparation will appear here after you upload a file
+                and run the YZER preparation tool.
+            </p>
+            {% endif %}
+        </div>
+    </section>
+</div>
+
+<script>
+    // Simple filename preview
+    document.addEventListener("DOMContentLoaded", function () {
+        const input = document.getElementById("scan_file");
+        const label = document.getElementById("scan_file_name");
+        if (input && label) {
+            input.addEventListener("change", function () {
+                label.textContent = input.files.length
+                    ? input.files[0].name
+                    : "No file selected";
+            });
+        }
+    });
+</script>
+{% endblock %}

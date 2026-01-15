@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <div class="page-kicker">Overview</div>
+    <h1 class="page-title">RealEstate App</h1>
+    <p class="page-subtitle">
+        A small web app for automating data-quality checks on real-estate transactions.
+        Choose a workflow to start cleaning your internal scan files, detecting duplicates,
+        or comparing your data against official RAMI records.
+    </p>
+</div>
+
+<div class="tool-grid">
+    <!-- Tool 1: YZER Prep -->
+    <a href="{{ url_for('prepare_yzer_view') }}" class="tool-card">
+        <div class="tool-tag">Tool 1</div>
+        <br> </br>
+        <div class="tool-card-header">
+            <div class="tool-icon">📂</div>
+            <h2 class="tool-title">Prepare File for YZER</h2>
+        </div>
+        <p class="tool-text">
+            Upload an internal scan file, standardize headers, clean numeric and date
+            formats, replace commas and dashes, and export a ready-to-upload CSV for YZER.
+        </p>
+    </a>
+
+    <!-- Tool 2: Duplicates -->
+    <a href="{{ url_for('duplicates_view') }}" class="tool-card">
+        <div class="tool-tag">Tool 2</div>
+        <br> </br>
+        <div class="tool-card-header">
+            <div class="tool-icon">📀</div>
+            <h2 class="tool-title">Duplicates Check</h2>
+        </div>
+        <p class="tool-text">
+            Filter to the latest scan date, keep full-sold deals only, and surface duplicate
+            transactions based on your key business fields.
+        </p>
+    </a>
+
+    <!-- Tool 3: Tax Gap -->
+    <a href="{{ url_for('tax_gap_view') }}" class="tool-card">
+        <div class="tool-tag">Tool 3</div>        
+        <br> </br>
+        <div class="tool-card-header">
+            <div class="tool-icon">🔍</div>
+            <h2 class="tool-title">Tax Gap Check</h2>
+        </div>
+        <p class="tool-text">
+            Compare official RAMI files against your internal scan and find transactions
+            that exist in RAMI but are missing from your system.
+        </p>
+    </a>
+</div>
+{% endblock %}
